@@ -89,15 +89,38 @@ def _write_metrics(results_dir: Path, report: dict, split_type: str) -> None:
     results_dir.mkdir(parents=True, exist_ok=True)
     with (results_dir / f"mlc_tree_{split_type}_metrics.csv").open("w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["method", "rate_hz", "split_type", "macro_f1", "top_predicted_class", "top_predicted_fraction"])
-        writer.writerow([
-            "mlc_tree",
-            120,
-            split_type,
-            f"{report['macro_f1']:.6f}",
-            report["top_predicted_class"],
-            f"{report['top_predicted_fraction']:.6f}",
-        ])
+        writer.writerow(
+            [
+                "method",
+                "rate_hz",
+                "split_type",
+                "macro_f1",
+                "macro_f1_all_classes",
+                "present_class_count",
+                "top_true_class",
+                "top_true_fraction",
+                "top_predicted_class",
+                "top_predicted_fraction",
+                "collapse_allowed_fraction",
+                "collapse_flag",
+            ]
+        )
+        writer.writerow(
+            [
+                "mlc_tree",
+                120,
+                split_type,
+                f"{report['macro_f1']:.6f}",
+                f"{report['macro_f1_all_classes']:.6f}",
+                report["present_class_count"],
+                report["top_true_class"],
+                f"{report['top_true_fraction']:.6f}",
+                report["top_predicted_class"],
+                f"{report['top_predicted_fraction']:.6f}",
+                f"{report['collapse_allowed_fraction']:.6f}",
+                report["collapse_flag"],
+            ]
+        )
 
 
 def main() -> None:

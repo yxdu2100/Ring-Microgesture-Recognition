@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
+from eval_utils import macro_f1_present_classes
 from ringdata import CLASS_NAMES, load_sessions, segment_sessions
 from train_hdc.encode import encode_window, make_codebooks
 from train_hdc.train import predict_hdc, train_hdc, _signed
@@ -33,11 +34,9 @@ def enrollment_curve(windows, out_csv: Path, dim: int = 2048) -> list[dict]:
             for cls, class_windows in by_class.items():
                 for w in class_windows[:n]:
                     memories[cls] += _signed(encode_window(w.raw, codebooks))
-            from sklearn.metrics import f1_score
-
             y_true, y_pred = predict_hdc(held_w, memories, codebooks)
             acc = float(np.mean(y_true == y_pred)) if len(y_true) else 0.0
-            macro_f1 = float(f1_score(y_true, y_pred, average="macro", labels=list(range(len(CLASS_NAMES))), zero_division=0)) if len(y_true) else 0.0
+            macro_f1, macro_f1_all, *_ = macro_f1_present_classes(y_true, y_pred, labels=list(range(len(CLASS_NAMES))))
             rows.append(
                 {
                     "base_sessions": k,
@@ -45,6 +44,7 @@ def enrollment_curve(windows, out_csv: Path, dim: int = 2048) -> list[dict]:
                     "examples_per_class": n,
                     "accuracy": acc,
                     "macro_f1": macro_f1,
+                    "macro_f1_all_classes": macro_f1_all,
                 }
             )
     out_csv.parent.mkdir(parents=True, exist_ok=True)

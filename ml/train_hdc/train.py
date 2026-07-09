@@ -14,10 +14,15 @@ from ringdata.splits import assert_no_cross_session_leakage, build_or_load_split
 from train_hdc.encode import Codebooks, encode_window, fit_level_bounds, hamming, make_codebooks
 
 SEED = 20260706
+DEFAULT_ENCODING_MODE = "ngram"
 
 
 def _signed(bits: np.ndarray) -> np.ndarray:
     return np.where(bits, 1, -1).astype(np.int16)
+
+
+def _class_bits(memories: np.ndarray, codebooks: Codebooks) -> np.ndarray:
+    return np.logical_or(memories > 0, np.logical_and(memories == 0, codebooks.bundle_tie.reshape(1, -1)))
 
 
 def _balanced_windows(windows, seed: int):
@@ -36,48 +41,56 @@ def _balanced_windows(windows, seed: int):
     return sorted(selected, key=lambda w: w.window_id)
 
 
-def train_hdc(train_w, codebooks: Codebooks, epochs: int = 5) -> np.ndarray:
+def train_hdc(train_w, codebooks: Codebooks, epochs: int = 5, mode: str = DEFAULT_ENCODING_MODE) -> np.ndarray:
     memories = np.zeros((len(CLASS_NAMES), codebooks.dim), dtype=np.int32)
     encoded = []
     labels = []
     balanced = _balanced_windows(train_w, SEED + codebooks.dim)
     for window in balanced:
-        q = encode_window(window.raw, codebooks)
+        q = encode_window(window.raw, codebooks, mode=mode)
         encoded.append(q)
         labels.append(window.class_id)
         memories[window.class_id] += _signed(q)
 
     for _ in range(epochs):
-        class_bits = memories > 0
+        class_bits = _class_bits(memories, codebooks)
         for q, y in zip(encoded, labels):
             pred = int(np.argmin(hamming(q, class_bits)))
             if pred != y:
                 s = _signed(q)
                 memories[y] += s
                 memories[pred] -= s
-                class_bits = memories > 0
+                class_bits = _class_bits(memories, codebooks)
     return memories
 
 
-def predict_hdc(windows, memories: np.ndarray, codebooks: Codebooks) -> tuple[np.ndarray, np.ndarray]:
-    class_bits = memories > 0
+def predict_hdc(windows, memories: np.ndarray, codebooks: Codebooks, mode: str = DEFAULT_ENCODING_MODE) -> tuple[np.ndarray, np.ndarray]:
+    class_bits = _class_bits(memories, codebooks)
     y_true = []
     y_pred = []
     for window in windows:
-        q = encode_window(window.raw, codebooks)
+        q = encode_window(window.raw, codebooks, mode=mode)
         y_true.append(window.class_id)
         y_pred.append(int(np.argmin(hamming(q, class_bits))))
     return np.array(y_true, dtype=np.int64), np.array(y_pred, dtype=np.int64)
 
 
-def evaluate_hdc(windows, memories: np.ndarray, codebooks: Codebooks, rate_hz: int, dim: int, out_dir: Path) -> tuple[float, dict]:
-    y_true, y_pred = predict_hdc(windows, memories, codebooks)
+def evaluate_hdc(
+    windows,
+    memories: np.ndarray,
+    codebooks: Codebooks,
+    rate_hz: int,
+    dim: int,
+    out_dir: Path,
+    mode: str = DEFAULT_ENCODING_MODE,
+) -> tuple[float, dict]:
+    y_true, y_pred = predict_hdc(windows, memories, codebooks, mode=mode)
     acc = float(np.mean(y_true == y_pred)) if len(y_true) else 0.0
-    report = prediction_report(y_true, y_pred, f"hdc_D{dim}", rate_hz, "cross_session", out_dir, fail_on_collapse=False)
+    report = prediction_report(y_true, y_pred, f"hdc_{mode}_D{dim}", rate_hz, "cross_session", out_dir, fail_on_collapse=False)
     return acc, report
 
 
-def sweep(windows, splits: dict, out_csv: Path) -> list[dict]:
+def sweep(windows, splits: dict, out_csv: Path, mode: str = DEFAULT_ENCODING_MODE) -> list[dict]:
     rows = []
     for rate in (120, 60, 30):
         rate_windows = windows if rate == 120 else resample_windows(windows, rate)
@@ -88,18 +101,25 @@ def sweep(windows, splits: dict, out_csv: Path) -> list[dict]:
             test_w = select_windows(rate_windows, splits["cross_session"]["test"])
             if not train_w or not test_w:
                 raise ValueError(f"HDC sweep rate {rate} D {dim}: empty train/test split")
-            memories = train_hdc(train_w, codebooks)
-            acc, report = evaluate_hdc(test_w, memories, codebooks, rate, dim, out_csv.parent)
+            memories = train_hdc(train_w, codebooks, mode=mode)
+            acc, report = evaluate_hdc(test_w, memories, codebooks, rate, dim, out_csv.parent, mode=mode)
             rows.append(
                 {
                     "method": "hdc",
+                    "encoding_mode": mode,
                     "rate_hz": rate,
                     "split_type": "cross_session",
                     "dim": dim,
                     "accuracy": acc,
                     "macro_f1": report["macro_f1"],
+                    "macro_f1_all_classes": report["macro_f1_all_classes"],
+                    "present_class_count": report["present_class_count"],
+                    "top_true_class": report["top_true_class"],
+                    "top_true_fraction": report["top_true_fraction"],
                     "top_predicted_class": report["top_predicted_class"],
                     "top_predicted_fraction": report["top_predicted_fraction"],
+                    "collapse_allowed_fraction": report["collapse_allowed_fraction"],
+                    "collapse_flag": report["collapse_flag"],
                     "memory_bytes": (dim // 8) * (len(CLASS_NAMES) + HDC_EXPORT_CODEBOOK_FACTOR),
                 }
             )
@@ -111,7 +131,7 @@ def sweep(windows, splits: dict, out_csv: Path) -> list[dict]:
     return rows
 
 
-HDC_EXPORT_CODEBOOK_FACTOR = 32 + 6
+HDC_EXPORT_CODEBOOK_FACTOR = 32 + 6 + 2
 
 
 def main() -> None:
@@ -119,13 +139,14 @@ def main() -> None:
     parser.add_argument("--data-dir", default="data")
     parser.add_argument("--splits", default="ml/splits.json")
     parser.add_argument("--out", default="ml/results/hdc/hdc_grid.csv")
+    parser.add_argument("--mode", default=DEFAULT_ENCODING_MODE, choices=["absolute", "bag", "ngram"])
     args = parser.parse_args()
 
     sessions = load_sessions(args.data_dir)
     windows = segment_sessions(sessions)
     splits = build_or_load_splits(windows, args.splits, seed=SEED)
     assert_no_cross_session_leakage(splits)
-    rows = sweep(windows, splits, Path(args.out))
+    rows = sweep(windows, splits, Path(args.out), mode=args.mode)
     for row in rows:
         print(row)
 

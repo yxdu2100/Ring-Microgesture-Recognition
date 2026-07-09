@@ -20,6 +20,8 @@ class Codebooks:
     dim: int
     levels: np.ndarray
     channels: np.ndarray
+    channel_tie: np.ndarray
+    bundle_tie: np.ndarray
     level_min: np.ndarray
     level_max: np.ndarray
 
@@ -47,6 +49,8 @@ def make_codebooks(
         hv[order[:n_on]] = ~hv[order[:n_on]]
         level_hv[level] = hv
     channel_hv = rng.integers(0, 2, size=(HDC_CHANNEL_COUNT, dim), dtype=np.uint8).astype(np.bool_)
+    channel_tie = rng.integers(0, 2, size=dim, dtype=np.uint8).astype(np.bool_)
+    bundle_tie = rng.integers(0, 2, size=dim, dtype=np.uint8).astype(np.bool_)
     if level_min is None:
         level_min = np.full(HDC_CHANNEL_COUNT, -32768, dtype=np.float32)
     if level_max is None:
@@ -55,6 +59,8 @@ def make_codebooks(
         dim=dim,
         levels=level_hv,
         channels=channel_hv,
+        channel_tie=channel_tie,
+        bundle_tie=bundle_tie,
         level_min=np.asarray(level_min, dtype=np.float32),
         level_max=np.asarray(level_max, dtype=np.float32),
     )
@@ -80,17 +86,64 @@ def level_indices(raw: np.ndarray, codebooks: Codebooks) -> np.ndarray:
     return np.clip(idx, 0, level_count - 1).astype(np.int16)
 
 
-def encode_window(raw: np.ndarray, codebooks: Codebooks) -> np.ndarray:
+def majority_bits(counts: np.ndarray, n: int, tie_bits: np.ndarray) -> np.ndarray:
+    half = n / 2.0
+    return np.logical_or(counts > half, np.logical_and(counts == half, tie_bits))
+
+
+def timestep_vector(raw_sample: np.ndarray, codebooks: Codebooks) -> np.ndarray:
+    idx = level_indices(raw_sample.reshape(1, -1), codebooks)[0]
+    bound = np.logical_xor(codebooks.levels[idx], codebooks.channels)
+    counts = np.count_nonzero(bound, axis=0)
+    return majority_bits(counts, HDC_CHANNEL_COUNT, codebooks.channel_tie)
+
+
+def permute_bits(bits: np.ndarray, shift: int, codebooks: Codebooks) -> np.ndarray:
+    if shift == 0:
+        return bits
+    word_bits = bits.reshape(codebooks.words, 32)
+    return np.roll(word_bits, shift % codebooks.words, axis=0).reshape(codebooks.dim)
+
+
+def encode_window_absolute(raw: np.ndarray, codebooks: Codebooks) -> np.ndarray:
     idx = level_indices(raw, codebooks)
-    words = codebooks.words
     window_counts = np.zeros(codebooks.dim, dtype=np.uint16)
     for timestep in range(raw.shape[0]):
         bound = np.logical_xor(codebooks.levels[idx[timestep]], codebooks.channels)
-        timestep_bits = np.count_nonzero(bound, axis=0) > (HDC_CHANNEL_COUNT // 2)
-        word_bits = timestep_bits.reshape(words, 32)
-        rotated_bits = np.roll(word_bits, timestep % words, axis=0).reshape(codebooks.dim)
-        window_counts += rotated_bits
-    return window_counts > (raw.shape[0] // 2)
+        timestep_bits = majority_bits(np.count_nonzero(bound, axis=0), HDC_CHANNEL_COUNT, codebooks.channel_tie)
+        window_counts += permute_bits(timestep_bits, timestep, codebooks)
+    return majority_bits(window_counts, raw.shape[0], codebooks.bundle_tie)
+
+
+def encode_window_bag(raw: np.ndarray, codebooks: Codebooks) -> np.ndarray:
+    window_counts = np.zeros(codebooks.dim, dtype=np.uint16)
+    for timestep in range(raw.shape[0]):
+        window_counts += timestep_vector(raw[timestep], codebooks)
+    return majority_bits(window_counts, raw.shape[0], codebooks.bundle_tie)
+
+
+def encode_window_ngram(raw: np.ndarray, codebooks: Codebooks, ngram: int = 3) -> np.ndarray:
+    if raw.shape[0] < ngram:
+        return encode_window_bag(raw, codebooks)
+    vectors = [timestep_vector(raw[timestep], codebooks) for timestep in range(raw.shape[0])]
+    window_counts = np.zeros(codebooks.dim, dtype=np.uint16)
+    gram_count = raw.shape[0] - ngram + 1
+    for start in range(gram_count):
+        gram = vectors[start + ngram - 1].copy()
+        for offset in range(ngram - 1):
+            gram = np.logical_xor(gram, permute_bits(vectors[start + offset], ngram - 1 - offset, codebooks))
+        window_counts += gram
+    return majority_bits(window_counts, gram_count, codebooks.bundle_tie)
+
+
+def encode_window(raw: np.ndarray, codebooks: Codebooks, mode: str = "ngram") -> np.ndarray:
+    if mode == "absolute":
+        return encode_window_absolute(raw, codebooks)
+    if mode == "bag":
+        return encode_window_bag(raw, codebooks)
+    if mode == "ngram":
+        return encode_window_ngram(raw, codebooks)
+    raise ValueError(f"unknown HDC encoding mode: {mode}")
 
 
 def pack_bits(bits: np.ndarray, words: int | None = None) -> np.ndarray:

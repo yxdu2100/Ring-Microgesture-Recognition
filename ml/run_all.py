@@ -109,7 +109,7 @@ def _fp_per_hour_null(windows, splits: dict) -> float:
     if not null_test:
         return float("nan")
     seconds = len(null_test) * 64 / 120.0
-    return 0.0 / (seconds / 3600.0)
+    return 0.0 / (seconds / 3600.0) ## what is this?
 
 
 def _write_summary(rows: list[dict], out_path: Path) -> None:

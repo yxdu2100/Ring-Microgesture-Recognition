@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from eval_utils import prediction_report
+from eval_utils import macro_f1_present_classes, prediction_report
 from ringdata import CLASS_NAMES, load_sessions, resample_windows, segment_sessions
 from ringdata.convert import raw_to_physical
 from ringdata.splits import assert_no_cross_session_leakage, build_or_load_splits, select_windows
@@ -84,9 +84,7 @@ class MacroF1EarlyStopping:
 
             def on_epoch_end(self, epoch, logs=None):
                 pred = np.argmax(self.model.predict(x_val, verbose=0), axis=1)
-                from sklearn.metrics import f1_score
-
-                score = f1_score(y_val, pred, average="macro", labels=list(range(len(CLASS_NAMES))), zero_division=0)
+                score, *_ = macro_f1_present_classes(y_val, pred, labels=list(range(len(CLASS_NAMES))))
                 logs = logs or {}
                 logs["val_macro_f1"] = score
                 if score > self.outer.best:
@@ -194,8 +192,14 @@ def train_one_rate(windows, splits: dict, rate_hz: int, out_dir: Path) -> dict:
         "rate_hz": rate_hz,
         "split_type": "cross_session",
         "macro_f1": macro_f1,
+        "macro_f1_all_classes": report["macro_f1_all_classes"],
+        "present_class_count": report["present_class_count"],
+        "top_true_class": report["top_true_class"],
+        "top_true_fraction": report["top_true_fraction"],
         "top_predicted_class": report["top_predicted_class"],
         "top_predicted_fraction": report["top_predicted_fraction"],
+        "collapse_allowed_fraction": report["collapse_allowed_fraction"],
+        "collapse_flag": report["collapse_flag"],
         "model": str(model_path),
     }
 
@@ -217,7 +221,24 @@ def main() -> None:
         rows.append(train_one_rate(windows, splits, rate, Path(args.out_dir)))
         print(f"cnn {rate}hz macro_f1={rows[-1]['macro_f1']:.4f}")
     with (Path(args.out_dir) / "cnn_metrics.csv").open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["method", "rate_hz", "split_type", "macro_f1", "model"])
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "method",
+                "rate_hz",
+                "split_type",
+                "macro_f1",
+                "macro_f1_all_classes",
+                "present_class_count",
+                "top_true_class",
+                "top_true_fraction",
+                "top_predicted_class",
+                "top_predicted_fraction",
+                "collapse_allowed_fraction",
+                "collapse_flag",
+                "model",
+            ],
+        )
         writer.writeheader()
         writer.writerows(rows)
 

@@ -6,9 +6,9 @@ import argparse
 from pathlib import Path
 
 import numpy as np
-from sklearn.metrics import f1_score
 
-from ringdata import CLASS_NAMES, load_sessions, resample_windows, segment_sessions
+from eval_utils import macro_f1_present_classes
+from ringdata import load_sessions, resample_windows, segment_sessions
 from ringdata.splits import build_or_load_splits, select_windows
 from train_cnn.train import _arrays, _balanced_train_windows
 
@@ -31,7 +31,7 @@ def quantize_model(model_path: Path, windows, splits: dict, rate_hz: int, out_pa
 
     model = tf.keras.models.load_model(model_path)
     float_pred = np.argmax(model.predict(x_test, verbose=0), axis=1)
-    float_f1 = float(f1_score(y_test, float_pred, average="macro", labels=list(range(len(CLASS_NAMES))), zero_division=0))
+    float_f1, *_ = macro_f1_present_classes(y_test, float_pred)
 
     def representative_dataset():
         for sample in x_rep:
@@ -60,7 +60,7 @@ def quantize_model(model_path: Path, windows, splits: dict, rate_hz: int, out_pa
         interpreter.invoke()
         out = interpreter.get_tensor(output_detail["index"])[0].astype(np.float32)
         preds.append(int(np.argmax((out - out_zero) * out_scale)))
-    int8_f1 = float(f1_score(y_test, preds, average="macro", labels=list(range(len(CLASS_NAMES))), zero_division=0))
+    int8_f1, *_ = macro_f1_present_classes(y_test, preds)
     gap = float_f1 - int8_f1
     if gap > max_gap:
         raise RuntimeError(f"int8 macro-F1 gap {gap:.4f} exceeds {max_gap:.4f}")
