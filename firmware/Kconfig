@@ -1,0 +1,39 @@
+mainmenu "Ring microgesture firmware"
+
+choice CLASSIFIER
+	prompt "On-device classifier"
+	default CLASSIFIER_NONE
+
+config CLASSIFIER_NONE
+	bool "None (streaming/data collection)"
+
+config CLASSIFIER_MLC
+	bool "Sensor MLC"
+
+config CLASSIFIER_CNN
+	bool "TFLM CNN"
+	select TENSORFLOW_LITE_MICRO
+	help
+	  Requires the Zephyr tflite-micro module to be present in the west
+	  workspace.
+
+config CLASSIFIER_HDC
+	bool "Hyperdimensional computing"
+
+endchoice
+
+config CLASSIFIER_DEBUG_STREAM
+	bool "Stream raw IMU samples while classifying"
+	depends on !CLASSIFIER_NONE
+	default y
+	help
+	  Keep the raw BLE IMU stream enabled in classifier builds for validation.
+
+config IMU_STREAM_HZ
+	int "IMU stream frequency"
+	default 120
+	range 60 120
+	help
+	  Build-time IMU sample rate. Use 120 Hz for the gesture study.
+
+source "Kconfig.zephyr"
