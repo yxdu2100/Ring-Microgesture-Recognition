@@ -16,6 +16,7 @@ Build and run on a physical iPhone (BLE required).
 |------|----------------|
 | Service | `12345678-9abc-11ee-be56-0242ac120002` |
 | IMU data (notify) | `1234567D-9ABC-11EE-BE56-0242AC120002` |
+| Classification result (notify) | `1234567E-9ABC-11EE-BE56-0242AC120002` |
 | IMU mode (read/write) | `1234567B-9ABC-11EE-BE56-0242AC120002` |
 | Command (write) | `12345678-1234-5678-1234-56789abcde01` |
 
@@ -25,6 +26,9 @@ Build and run on a physical iPhone (BLE required).
 - `3` = keepalive (sent every 2 s; firmware lease timeout is 3 s)
 
 IMU mode characteristic maps to `imu_set_trigger_mode()` which is currently a no-op in streaming firmware.
+
+Classification notifications are 10 bytes:
+`version`, `classifier_kind`, `class_id`, `raw_code`, `score_le16`, `sample_id_le32`.
 
 ## Session export layout
 

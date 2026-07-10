@@ -12,6 +12,20 @@ struct HomeView: View {
     @State private var showBLEScanner = false
 
     var body: some View {
+        TabView {
+            collectionView
+                .tabItem {
+                    Label("Collect", systemImage: "record.circle")
+                }
+
+            LiveInferenceView()
+                .tabItem {
+                    Label("Live", systemImage: "dot.radiowaves.left.and.right")
+                }
+        }
+    }
+
+    private var collectionView: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
@@ -167,6 +181,150 @@ struct HomeView: View {
         }
         .padding(12)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct LiveInferenceView: View {
+    @Environment(RecordingCoordinator.self) private var coordinator
+    @State private var liveRequested = false
+
+    private let holdDuration: TimeInterval = 1.4
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    connectionPanel
+                    liveControls
+                    gesturePanel
+                    historyPanel
+                }
+                .padding()
+            }
+            .navigationTitle("Live Gesture")
+            .onAppear {
+                if !coordinator.ble.connectionState.isConnected {
+                    coordinator.ble.setAutoReconnect(true)
+                    coordinator.ble.connect()
+                }
+            }
+        }
+    }
+
+    private var connectionPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Ring Connection")
+                .font(.headline)
+            HStack {
+                Circle()
+                    .fill(coordinator.ble.connectionState.isConnected ? .green : .orange)
+                    .frame(width: 10, height: 10)
+                Text(coordinator.ble.connectionState.label)
+                Spacer()
+                if !coordinator.ble.connectionState.isConnected {
+                    Button("Connect") {
+                        coordinator.ble.setAutoReconnect(true)
+                        coordinator.ble.connect()
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .padding(12)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private var liveControls: some View {
+        HStack {
+            if coordinator.isActiveSession {
+                Label("Recording", systemImage: "record.circle.fill")
+                    .foregroundStyle(.red)
+            } else if coordinator.ble.isStreaming && liveRequested {
+                Button {
+                    coordinator.ble.stopStreaming()
+                    liveRequested = false
+                } label: {
+                    Label("Stop Live", systemImage: "stop.fill")
+                }
+                .buttonStyle(.borderedProminent)
+            } else {
+                Button {
+                    liveRequested = true
+                    coordinator.ble.startStreaming()
+                } label: {
+                    Label("Start Live", systemImage: "play.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!coordinator.ble.connectionState.isConnected)
+            }
+            Spacer()
+            if let latest = coordinator.ble.latestInference {
+                Text(latest.classifier.label)
+                    .font(.caption)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.thinMaterial, in: Capsule())
+            }
+        }
+    }
+
+    private var gesturePanel: some View {
+        TimelineView(.periodic(from: Date(), by: 0.25)) { context in
+            let displayed = displayedGesture(now: context.date)
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Gesture")
+                    .font(.headline)
+                Text(displayed?.classLabel ?? "None")
+                    .font(.system(size: 38, weight: .semibold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentTransition(.numericText())
+                if let latest = coordinator.ble.latestInference {
+                    LabeledContent("Raw latest") {
+                        Text("\(latest.classLabel) · code \(latest.rawCode)")
+                            .monospacedDigit()
+                    }
+                    LabeledContent("Sample") {
+                        Text("\(latest.sampleID)")
+                            .monospacedDigit()
+                    }
+                }
+            }
+            .padding(14)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
+    private var historyPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Recent")
+                .font(.headline)
+            ForEach(coordinator.ble.recentInferenceResults.prefix(8)) { result in
+                HStack {
+                    Text(result.classLabel)
+                    Spacer()
+                    Text("raw \(result.rawCode)")
+                        .foregroundStyle(.secondary)
+                    Text("#\(result.sampleID)")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption)
+                Divider()
+            }
+        }
+        .padding(12)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func displayedGesture(now: Date) -> InferenceResult? {
+        guard let result = coordinator.ble.recentInferenceResults.first(where: { !$0.isNull }) else {
+            return nil
+        }
+
+        if now.timeIntervalSince(result.receivedAt) <= holdDuration {
+            return result
+        }
+        return nil
     }
 }
 

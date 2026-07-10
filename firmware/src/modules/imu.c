@@ -533,14 +533,26 @@ static void imu_stream_thread_fn(void *arg1, void *arg2, void *arg3)
                          K_MSEC(IMU_POLL_FALLBACK_MS));
         ARG_UNUSED(interrupt_timestamp_us);
 
-#if IS_ENABLED(CONFIG_CLASSIFIER_MLC)
-        clf_mlc_irq_handler();
-#endif
-
         if (!imu_stream_enabled) {
             memset(imu_fifo_slots, 0, sizeof(imu_fifo_slots));
             continue;
         }
+
+#if IS_ENABLED(CONFIG_CLASSIFIER_MLC)
+        {
+            uint8_t class_id = 0U;
+            uint8_t raw_code = 0U;
+            int16_t score = 0;
+
+            if (clf_mlc_poll_result(&class_id, &score, &raw_code) == 0) {
+                bt_app_send_classification(BT_APP_CLASSIFIER_MLC,
+                                           class_id,
+                                           raw_code,
+                                           score,
+                                           imu_sample_id);
+            }
+        }
+#endif
 
         /* Drain the FIFO fully. Re-reading the status and looping until the
          * FIFO is empty guarantees we leave it below the watermark, so the
@@ -739,6 +751,12 @@ int imu_start_streaming(void)
     }
 
     k_msgq_purge(&imu_drdy_msgq);
+
+    ret = imu_configure_streaming_profile();
+    if (ret != 0) {
+        LOG_ERR("imu_start_streaming: configure_streaming_profile failed (%d)", ret);
+        return ret;
+    }
 
     ret = imu_flush_fifo();
     if (ret != 0) {

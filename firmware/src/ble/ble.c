@@ -18,6 +18,7 @@ LOG_MODULE_REGISTER(ble_module, LOG_LEVEL_INF);
 #define STREAM_LEASE_TIMEOUT_MS 3000
 #define ATTR_IDX_CMD_DATA_VAL 2
 #define ATTR_IDX_IMU_DATA_VAL 7
+#define ATTR_IDX_CLASSIFICATION_VAL 10
 
 #define BT_UUID_RING_SERVICE_VAL \
 	BT_UUID_128_ENCODE(0x12345678, 0x9abc, 0x11ee, 0xbe56, 0x0242ac120002)
@@ -35,10 +36,16 @@ LOG_MODULE_REGISTER(ble_module, LOG_LEVEL_INF);
 	BT_UUID_128_ENCODE(0x1234567D, 0x9abc, 0x11ee, 0xbe56, 0x0242ac120002)
 #define BT_UUID_IMU_DATA BT_UUID_DECLARE_128(BT_UUID_IMU_DATA_VAL)
 
+#define BT_UUID_CLASSIFICATION_VAL \
+	BT_UUID_128_ENCODE(0x1234567E, 0x9abc, 0x11ee, 0xbe56, 0x0242ac120002)
+#define BT_UUID_CLASSIFICATION BT_UUID_DECLARE_128(BT_UUID_CLASSIFICATION_VAL)
+
 static struct bt_conn *current_conn;
 static bool cmd_notify_enabled;
 static bool imu_notify_enabled;
+static bool classification_notify_enabled;
 static uint8_t imu_dummy_buf[1];
+static uint8_t classification_dummy_buf[1];
 static uint8_t current_imu_mode_val;
 static int64_t last_stream_lease_ms;
 static bool recovery_in_progress;
@@ -90,10 +97,13 @@ static bool stream_transport_ready(void)
 
 	if (IS_ENABLED(CONFIG_CLASSIFIER_NONE) ||
 	    IS_ENABLED(CONFIG_CLASSIFIER_DEBUG_STREAM)) {
-		return imu_notify_enabled;
+		if (IS_ENABLED(CONFIG_CLASSIFIER_NONE)) {
+			return imu_notify_enabled;
+		}
+		return imu_notify_enabled && classification_notify_enabled;
 	}
 
-	return cmd_notify_enabled;
+	return classification_notify_enabled;
 }
 
 static void refresh_stream_lease(void)
@@ -208,6 +218,13 @@ static void imu_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 	LOG_INF("IMU notify %s", imu_notify_enabled ? "enabled" : "disabled");
 }
 
+static void classification_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+	ARG_UNUSED(attr);
+	classification_notify_enabled = (value == BT_GATT_CCC_NOTIFY);
+	LOG_INF("Classification notify %s", classification_notify_enabled ? "enabled" : "disabled");
+}
+
 BT_GATT_SERVICE_DEFINE(ring_svc,
 	BT_GATT_PRIMARY_SERVICE(BT_UUID_RING_SERVICE),
 
@@ -234,6 +251,16 @@ BT_GATT_SERVICE_DEFINE(ring_svc,
 		imu_dummy_buf),
 
 	BT_GATT_CCC(imu_ccc_cfg_changed,
+		BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+
+	BT_GATT_CHARACTERISTIC(BT_UUID_CLASSIFICATION,
+		BT_GATT_CHRC_NOTIFY,
+		0,
+		NULL,
+		NULL,
+		classification_dummy_buf),
+
+	BT_GATT_CCC(classification_ccc_cfg_changed,
 		BT_GATT_PERM_READ | BT_GATT_PERM_WRITE)
 );
 
@@ -334,6 +361,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	last_stream_lease_ms = 0;
 	cmd_notify_enabled = false;
 	imu_notify_enabled = false;
+	classification_notify_enabled = false;
 
 	adv_restart_attempts = 0;
 	k_work_schedule(&restart_advertising_work, K_NO_WAIT);
@@ -439,21 +467,25 @@ void bt_app_send_imu_samples(const struct bt_app_imu_sample *samples, size_t sam
 	}
 }
 
-void bt_app_send_classification(uint8_t class_id, int16_t score, uint32_t sample_id)
+void bt_app_send_classification(uint8_t classifier_id, uint8_t class_id, uint8_t raw_code,
+				int16_t score, uint32_t sample_id)
 {
 	uint8_t payload[BT_APP_CLASSIFICATION_PAYLOAD_LEN];
 	int err;
 
-	if (!current_conn || !cmd_notify_enabled || !is_streaming) {
+	if (!current_conn || !classification_notify_enabled || !is_streaming) {
 		return;
 	}
 
-	payload[0] = class_id;
-	sys_put_le16((uint16_t)score, &payload[1]);
-	sys_put_le32(sample_id, &payload[3]);
+	payload[0] = 1U;
+	payload[1] = classifier_id;
+	payload[2] = class_id;
+	payload[3] = raw_code;
+	sys_put_le16((uint16_t)score, &payload[4]);
+	sys_put_le32(sample_id, &payload[6]);
 
 	err = bt_gatt_notify(current_conn,
-			     &ring_svc.attrs[ATTR_IDX_CMD_DATA_VAL],
+			     &ring_svc.attrs[ATTR_IDX_CLASSIFICATION_VAL],
 			     payload,
 			     sizeof(payload));
 	if (err != 0) {

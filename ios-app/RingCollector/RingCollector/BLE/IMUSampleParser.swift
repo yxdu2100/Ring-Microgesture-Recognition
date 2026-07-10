@@ -35,6 +35,25 @@ enum IMUSampleParser {
     }
 }
 
+enum InferenceResultParser {
+    static func parse(from data: Data) -> InferenceResult? {
+        guard data.count == BLEConstants.inferencePayloadLength else { return nil }
+
+        let version = data[0]
+        guard version == BLEConstants.inferencePayloadVersion else { return nil }
+
+        return InferenceResult(
+            version: version,
+            classifier: ClassifierKind(rawValue: data[1]),
+            classID: data[2],
+            rawCode: data[3],
+            score: data.readInt16LE(at: 4),
+            sampleID: data.readUInt32LE(at: 6),
+            receivedAt: Date()
+        )
+    }
+}
+
 final class SampleIDUnwrapper {
     private var epoch: UInt64 = 0
     private var lastWrapped: UInt16?

@@ -26,6 +26,30 @@ struct IMUSample: Sendable {
     }
 }
 
+struct InferenceResult: Identifiable, Sendable {
+    let id = UUID()
+    let version: UInt8
+    let classifier: ClassifierKind
+    let classID: UInt8
+    let rawCode: UInt8
+    let score: Int16
+    let sampleID: UInt32
+    let receivedAt: Date
+
+    var isNull: Bool { classID == 4 }
+
+    var classLabel: String {
+        switch classID {
+        case 0: "Double Side Tap"
+        case 1: "Double Pinch"
+        case 2: "Pinch Hold"
+        case 3: "Double Flick"
+        case 4: "Null"
+        default: "Unknown"
+        }
+    }
+}
+
 enum BLEConnectionState: Equatable {
     case poweredOff
     case unauthorized

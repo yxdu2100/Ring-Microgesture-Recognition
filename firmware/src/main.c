@@ -14,7 +14,7 @@ LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
 #define CONTROL_EVENTS (EVENT_START_STREAMING | EVENT_ENTER_LOW_POWER)
 
-#if !defined(CONFIG_CLASSIFIER_NONE)
+#if !defined(CONFIG_CLASSIFIER_NONE) && !defined(CONFIG_CLASSIFIER_MLC)
 #define CLASSIFIER_HOP_SAMPLES 64U
 #define CLASSIFIER_QUEUE_LEN 128U
 
@@ -119,7 +119,10 @@ static void classifier_process_sample(const struct bt_app_imu_sample *sample)
 	decision = clf_process_window(classifier_window, CLF_WINDOW_SAMPLES);
 
 	if (decision >= 0 && decision < CLF_CLASS_COUNT) {
-		bt_app_send_classification((uint8_t)decision,
+		bt_app_send_classification(IS_ENABLED(CONFIG_CLASSIFIER_CNN) ?
+					   BT_APP_CLASSIFIER_CNN : BT_APP_CLASSIFIER_HDC,
+					   (uint8_t)decision,
+					   (uint8_t)decision,
 					   clf_last_score(),
 					   window_end_sample_id);
 	}
@@ -182,7 +185,7 @@ int main(void)
 		LOG_WRN("Classifier %s init returned %d", clf_name(), ret);
 	}
 
-#if !defined(CONFIG_CLASSIFIER_NONE)
+#if !defined(CONFIG_CLASSIFIER_NONE) && !defined(CONFIG_CLASSIFIER_MLC)
 	imu_set_sample_callback(classifier_sample_callback);
 #endif
 
@@ -208,7 +211,7 @@ int main(void)
 				(int)is_streaming, events);
 		}
 
-#if !defined(CONFIG_CLASSIFIER_NONE)
+#if !defined(CONFIG_CLASSIFIER_NONE) && !defined(CONFIG_CLASSIFIER_MLC)
 		classifier_drain_samples();
 #endif
 		k_msleep(20);

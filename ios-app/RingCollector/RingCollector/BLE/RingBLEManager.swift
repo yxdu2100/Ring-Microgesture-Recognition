@@ -7,14 +7,18 @@ final class RingBLEManager: NSObject {
     var isStreaming = false
     var lastUnwrappedSampleID: UInt64?
     var connectedPeripheralName: String?
+    var latestInference: InferenceResult?
+    var recentInferenceResults: [InferenceResult] = []
 
     var onSamplesReceived: (([IMUSample]) -> Void)?
     var onConnectionEvent: ((String, UInt64?) -> Void)?
+    var onInferenceReceived: ((InferenceResult) -> Void)?
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
     private var commandCharacteristic: CBCharacteristic?
     private var imuDataCharacteristic: CBCharacteristic?
+    private var classificationCharacteristic: CBCharacteristic?
 
     private let unwrapper = SampleIDUnwrapper()
     private var shouldAutoReconnect = true
@@ -22,6 +26,8 @@ final class RingBLEManager: NSObject {
     private var lastPeripheralIdentifier: UUID?
     private var disconnectedThisSession = false
     private var pendingStreamStart = false
+    private var imuNotificationsReady = false
+    private var classificationNotificationsReady = false
     /// Last live advertised local-name seen for the peripheral we're connecting to.
     /// CBPeripheral.name is an iOS-level cache keyed by physical BLE address and can
     /// be stale (e.g. a name left over from different firmware on the same address),
@@ -110,7 +116,10 @@ final class RingBLEManager: NSObject {
     }
 
     private func activateStreamingIfReady() {
-        guard pendingStreamStart, commandCharacteristic != nil else { return }
+        guard pendingStreamStart, commandCharacteristic != nil, imuNotificationsReady else { return }
+        if classificationCharacteristic != nil && !classificationNotificationsReady {
+            return
+        }
         if disconnectedThisSession {
             unwrapper.markFirmwareWillRestart()
         }
@@ -215,6 +224,9 @@ extension RingBLEManager: CBCentralManagerDelegate {
         self.peripheral = nil
         commandCharacteristic = nil
         imuDataCharacteristic = nil
+        classificationCharacteristic = nil
+        imuNotificationsReady = false
+        classificationNotificationsReady = false
         isStreaming = false
         stopKeepalive()
         connectionState = .disconnected
@@ -234,7 +246,12 @@ extension RingBLEManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard error == nil, let service = peripheral.services?.first(where: { $0.uuid == BLEConstants.serviceUUID }) else { return }
         peripheral.discoverCharacteristics(
-            [BLEConstants.imuDataUUID, BLEConstants.imuModeUUID, BLEConstants.commandUUID],
+            [
+                BLEConstants.imuDataUUID,
+                BLEConstants.imuModeUUID,
+                BLEConstants.commandUUID,
+                BLEConstants.classificationUUID,
+            ],
             for: service
         )
     }
@@ -249,6 +266,9 @@ extension RingBLEManager: CBPeripheralDelegate {
             case BLEConstants.imuDataUUID:
                 imuDataCharacteristic = characteristic
                 peripheral.setNotifyValue(true, for: characteristic)
+            case BLEConstants.classificationUUID:
+                classificationCharacteristic = characteristic
+                peripheral.setNotifyValue(true, for: characteristic)
             default:
                 break
             }
@@ -257,16 +277,36 @@ extension RingBLEManager: CBPeripheralDelegate {
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
-        guard error == nil, characteristic.uuid == BLEConstants.imuDataUUID else { return }
+        guard error == nil else { return }
+
+        if characteristic.uuid == BLEConstants.imuDataUUID {
+            imuNotificationsReady = characteristic.isNotifying
+        } else if characteristic.uuid == BLEConstants.classificationUUID {
+            classificationNotificationsReady = characteristic.isNotifying
+        } else {
+            return
+        }
+
         if characteristic.isNotifying, isStreaming {
             activateStreamingIfReady()
         }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
-        guard error == nil,
-              characteristic.uuid == BLEConstants.imuDataUUID,
-              let data = characteristic.value else { return }
+        guard error == nil, let data = characteristic.value else { return }
+
+        if characteristic.uuid == BLEConstants.classificationUUID {
+            guard let result = InferenceResultParser.parse(from: data) else { return }
+            latestInference = result
+            recentInferenceResults.insert(result, at: 0)
+            if recentInferenceResults.count > 20 {
+                recentInferenceResults.removeLast(recentInferenceResults.count - 20)
+            }
+            onInferenceReceived?(result)
+            return
+        }
+
+        guard characteristic.uuid == BLEConstants.imuDataUUID else { return }
 
         let samples = IMUSampleParser.parseSamples(from: data, unwrapper: unwrapper)
         guard !samples.isEmpty else { return }

@@ -9,7 +9,11 @@
 
 #define BT_APP_IMU_SAMPLE_PAYLOAD_LEN 23U
 #define BT_APP_IMU_SAMPLES_PER_PACKET 7U
-#define BT_APP_CLASSIFICATION_PAYLOAD_LEN 7U
+#define BT_APP_CLASSIFICATION_PAYLOAD_LEN 10U
+
+#define BT_APP_CLASSIFIER_MLC 1U
+#define BT_APP_CLASSIFIER_CNN 2U
+#define BT_APP_CLASSIFIER_HDC 3U
 
 #define BT_APP_IMU_TS_FLAG_HARDWARE     BIT(0)
 #define BT_APP_IMU_TS_FLAG_INTERPOLATED BIT(1)
@@ -35,7 +39,8 @@ extern volatile bool is_streaming;
 
 int ble_init(void);
 void bt_app_send_imu_samples(const struct bt_app_imu_sample *samples, size_t sample_count);
-void bt_app_send_classification(uint8_t class_id, int16_t score, uint32_t sample_id);
+void bt_app_send_classification(uint8_t classifier_id, uint8_t class_id, uint8_t raw_code,
+                                int16_t score, uint32_t sample_id);
 bool bt_app_is_connected(void);
 bool bt_app_stream_should_continue(void);
 void bt_app_mark_stream_stopped(void);

@@ -21,8 +21,10 @@ The Kconfig choice selects which classifier source file is compiled in and which
 
 Generated classifier assets live in `src/classifiers/generated/`:
 
-- `mlc_ucf.h`: exported LSM6DSV16X UCF register/value lines
 - `cnn_model.h`: exported int8 TFLite model bytes
 - `hdc_memories.h`: HDC level, channel, and class hypervectors
+
+The active MEMS Studio MLC export is `src/modules/mlc.h`; `clf_mlc.c` applies
+its generated operation list directly.
 
 The placeholder headers intentionally warn at build time until replaced by training exports.
