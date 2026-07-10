@@ -12,7 +12,8 @@ from pathlib import Path
 import numpy as np
 
 from ringdata import CLASS_NAMES, load_sessions, segment_sessions
-from ringdata.splits import assert_no_cross_session_leakage, build_or_load_splits
+from ringdata.splits import assert_no_cross_session_leakage, build_or_load_splits, select_windows
+from train_mlc.features import MEMS_STUDIO_GYRO_INTERNAL_PER_LSB
 
 SEED = 20260706
 
@@ -157,6 +158,8 @@ def main() -> None:
     parser.add_argument("--results-dir", default="ml/results")
     parser.add_argument("--skip-cnn", action="store_true")
     parser.add_argument("--drop-invalid-windows", action="store_true")
+    parser.add_argument("--st-tree", default=None, help="Optional MEMS Studio ST_decision_tree_*.txt fixed tree to evaluate")
+    parser.add_argument("--st-tree-gyro-lsb-scale", type=float, default=MEMS_STUDIO_GYRO_INTERNAL_PER_LSB)
     args = parser.parse_args()
 
     results = Path(args.results_dir)
@@ -202,6 +205,38 @@ def main() -> None:
             "top_predicted_fraction": tree_report["top_predicted_fraction"],
         }
     )
+
+    if args.st_tree:
+        from train_mlc.st_tree import MLCTreeClassifier
+
+        st_test_w = select_windows(windows, splits["cross_session"]["test"])
+        for precision in ("fp16", "fp64"):
+            st_clf = MLCTreeClassifier.from_file(
+                args.st_tree,
+                precision=precision,
+                gyro_lsb_scale=args.st_tree_gyro_lsb_scale,
+            )
+            y_true, y_pred = st_clf.predict_windows(st_test_w)
+            st_report = prediction_report(
+                y_true,
+                y_pred,
+                f"st_mlc_fixed_{precision}",
+                120,
+                "cross_session",
+                results,
+                fail_on_collapse=False,
+            )
+            summary_rows.append(
+                {
+                    "method": f"st_mlc_fixed_{precision}",
+                    "rate_hz": 120,
+                    "split_type": "cross_session",
+                    "macro_f1": st_report["macro_f1"],
+                    "fp_per_hr_null": _fp_per_hour_null(windows, splits),
+                    "top_predicted_class": st_report["top_predicted_class"],
+                    "top_predicted_fraction": st_report["top_predicted_fraction"],
+                }
+            )
 
     from train_hdc.train import sweep as hdc_sweep
 

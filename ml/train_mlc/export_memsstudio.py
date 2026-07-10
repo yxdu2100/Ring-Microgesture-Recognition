@@ -56,7 +56,10 @@ def export_windows(windows, splits: dict, out_dir: Path, acc_fs: int, gyr_fs: in
 
     total = 0
     for label in CLASS_NAMES:
-        group = sorted(by_label.get(label, []), key=lambda w: w.window_id)
+        group = sorted(
+            by_label.get(label, []),
+            key=lambda w: (w.session_id, w.start_sample_id, w.window_id),
+        )
         rows = []
         for w in group:
             n = w.raw.shape[0]
