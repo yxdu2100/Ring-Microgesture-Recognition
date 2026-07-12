@@ -1,10 +1,13 @@
 #include <limits.h>
 #include <stdint.h>
 
+#include <zephyr/sys_clock.h>
+
 #include "benchmark.h"
 
 struct classifier_benchmark_stats g_classifier_benchmark_stats = {
 	.min_cycles = UINT32_MAX,
+	.cycles_per_second = CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC,
 };
 
 void classifier_benchmark_record(uint32_t cycles)

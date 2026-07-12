@@ -50,9 +50,6 @@ static uint8_t current_imu_mode_val;
 static int64_t last_stream_lease_ms;
 static bool recovery_in_progress;
 
-K_EVENT_DEFINE(sys_events);
-volatile bool is_streaming;
-
 const struct bt_data ad[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
 	BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME,

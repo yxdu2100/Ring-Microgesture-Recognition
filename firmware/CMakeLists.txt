@@ -21,9 +21,10 @@ set_source_files_properties(src/classifiers/clf_cnn.c PROPERTIES LANGUAGE CXX)
 target_sources(app PRIVATE
     src/main.c
     src/benchmark.c
-    src/ble/ble.c
     src/modules/imu.c
 )
+
+target_sources_ifdef(CONFIG_BT app PRIVATE src/ble/ble.c)
 
 target_sources_ifdef(CONFIG_CLASSIFIER_NONE app PRIVATE src/classifiers/clf_none.c)
 target_sources_ifdef(CONFIG_CLASSIFIER_MLC  app PRIVATE src/classifiers/clf_mlc.c)

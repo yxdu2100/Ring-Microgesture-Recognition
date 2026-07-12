@@ -16,6 +16,11 @@ LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 #define EVENT_CLASSIFIER_SAMPLES BIT(2)
 #define CONTROL_EVENTS (EVENT_START_STREAMING | EVENT_ENTER_LOW_POWER | EVENT_CLASSIFIER_SAMPLES)
 
+/* These application-state objects are shared with BLE in normal builds, but
+ * must remain available when CONFIG_BT=n in a headless benchmark build. */
+K_EVENT_DEFINE(sys_events);
+volatile bool is_streaming;
+
 #if !defined(CONFIG_CLASSIFIER_NONE) && !defined(CONFIG_CLASSIFIER_MLC)
 #define CLASSIFIER_HOP_SAMPLES 64U
 #define CLASSIFIER_QUEUE_LEN 128U
@@ -125,6 +130,7 @@ static void classifier_process_sample(const struct bt_app_imu_sample *sample)
 	decision = clf_process_window(classifier_window, CLF_WINDOW_SAMPLES);
 	classifier_benchmark_record(k_cycle_get_32() - cycle_start);
 
+#if IS_ENABLED(CONFIG_BT)
 	if (decision >= 0 && decision < CLF_CLASS_COUNT) {
 		bt_app_send_classification(IS_ENABLED(CONFIG_CLASSIFIER_CNN) ?
 					   BT_APP_CLASSIFIER_CNN : BT_APP_CLASSIFIER_HDC,
@@ -133,6 +139,7 @@ static void classifier_process_sample(const struct bt_app_imu_sample *sample)
 					   clf_last_score(),
 					   window_end_sample_id);
 	}
+#endif
 }
 
 static void classifier_drain_samples(void)
@@ -156,7 +163,9 @@ static void handle_control_events(uint32_t events)
 	if ((events & EVENT_ENTER_LOW_POWER) != 0U) {
 		LOG_INF("handle_control_events: EVENT_ENTER_LOW_POWER");
 		imu_stop_streaming();
+#if IS_ENABLED(CONFIG_BT)
 		bt_app_mark_stream_stopped();
+#endif
 	}
 
 	if ((events & EVENT_START_STREAMING) != 0U) {
@@ -168,7 +177,9 @@ static void handle_control_events(uint32_t events)
 		LOG_INF("handle_control_events: imu_start_streaming() -> %d", ret);
 		if (ret != 0) {
 			LOG_ERR("Failed to start IMU stream (err %d)", ret);
+#if IS_ENABLED(CONFIG_BT)
 			bt_app_mark_stream_stopped();
+#endif
 		}
 	}
 }
@@ -177,12 +188,14 @@ int main(void)
 {
 	int ret;
 
+#if IS_ENABLED(CONFIG_BT)
 	if (!IS_ENABLED(CONFIG_CLASSIFIER_BENCHMARK_MODE)) {
 		ret = ble_init();
 		if (ret != 0) {
 			return ret;
 		}
 	}
+#endif
 
 	ret = imu_init();
 	if (ret != 0) {
@@ -204,6 +217,7 @@ int main(void)
 		if (ret != 0) {
 			return ret;
 		}
+		is_streaming = true;
 	}
 
 	LOG_INF("Firmware ready: classifier=%s", clf_name());
@@ -222,9 +236,11 @@ int main(void)
 			handle_control_events(events);
 		}
 
+#if IS_ENABLED(CONFIG_BT)
 		if (!IS_ENABLED(CONFIG_CLASSIFIER_BENCHMARK_MODE)) {
 			(void)bt_app_stream_should_continue();
 		}
+#endif
 
 		int64_t now_ms = k_uptime_get();
 

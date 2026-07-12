@@ -25,12 +25,17 @@ LOG_MODULE_REGISTER(clf_mlc, LOG_LEVEL_INF);
 #define MLC_INT1_MLC1 BIT(0)
 #define MLC_CONF_POLL_INTERVAL_MS 1U
 #define MLC_CONF_POLL_TIMEOUT_MS 100U
-#define MLC_CODE_NONE 0U
-#define MLC_CODE_FLICKER 1U
-#define MLC_CODE_DOUBLEPINCH 2U
-#define MLC_CODE_SIDETAP 3U
-#define MLC_CODE_NULL 4U
-#define MLC_CODE_PINCHHOLD 5U
+/* Output codes of the deployed MEMS Studio tree (fold within_user_01,
+ * ml/st_trees/within_user_01.h, exported 2026-07-12). MEMS Studio assigns
+ * codes in alphabetical label order; they MUST be re-checked against the
+ * mlc_results_0_0 table in modules/mlc.h whenever the tree is regenerated.
+ */
+#define MLC_CODE_INVALID 0xFFU
+#define MLC_CODE_FLICKER 0U
+#define MLC_CODE_DOUBLEPINCH 1U
+#define MLC_CODE_SIDETAP 2U
+#define MLC_CODE_NULL 3U
+#define MLC_CODE_PINCHHOLD 4U
 #define MLC_PROJECT_CLASS_NULL 4U
 
 static atomic_t pending_class = ATOMIC_INIT(-EAGAIN);
@@ -136,7 +141,7 @@ int clf_init(void)
 		}
 	}
 
-	last_reported_raw_code = MLC_CODE_NONE;
+	last_reported_raw_code = MLC_CODE_INVALID;
 	atomic_set(&pending_class, -EAGAIN);
 	LOG_INF("MLC classifier initialized from MEMS Studio config (%u ops)", conf->len);
 	return 0;

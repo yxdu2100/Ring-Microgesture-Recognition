@@ -1,6 +1,5 @@
 .claude/
 data/
-docs/
 Codex Prompt.md
 .DS_Store
 ml/results/

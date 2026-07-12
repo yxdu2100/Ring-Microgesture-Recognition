@@ -1,0 +1,52 @@
+F1_MINIMUM_GYR_X <= -18.769550 : double_flick (185)
+F1_MINIMUM_GYR_X > -18.769550
+|   F2_MAXIMUM_GYR_Y <= 5.189455
+|   |   F3_MINIMUM_ACC_Y <= -1.015381 : double_side_tap (177/1.0)
+|   |   F3_MINIMUM_ACC_Y > -1.015381 : null (170/10.0)
+|   F2_MAXIMUM_GYR_Y > 5.189455
+|   |   F6_ABS_MEAN_GYR_V <= 1.975590
+|   |   |   F10_MEAN_GYR_Y <= 0.352417
+|   |   |   |   F5_PEAK_TO_PEAK_ACC_X <= 2.473630
+|   |   |   |   |   F14_MINIMUM_ACC_Z <= -2.421875 : null (10)
+|   |   |   |   |   F14_MINIMUM_ACC_Z > -2.421875 : pinch_hold (6/3.0)
+|   |   |   |   F5_PEAK_TO_PEAK_ACC_X > 2.473630
+|   |   |   |   |   F1_MINIMUM_GYR_X <= -6.253905 : pinch_hold (8/2.0)
+|   |   |   |   |   F1_MINIMUM_GYR_X > -6.253905 : double_pinch (8/3.0)
+|   |   |   F10_MEAN_GYR_Y > 0.352417 : pinch_hold (167/4.0)
+|   |   F6_ABS_MEAN_GYR_V > 1.975590
+|   |   |   F15_MEAN_ACC_Z <= -0.424316 : double_pinch (190/10.0)
+|   |   |   F15_MEAN_ACC_Z > -0.424316 : null (6)
+
+Number of Leaves: 10
+Size of the tree: 19
+
+Classes:
+=> double_flick, double_pinch, double_side_tap, null, pinch_hold
+
+Features:
+=> F1_MINIMUM_GYR_X, F2_MAXIMUM_GYR_Y, F3_MINIMUM_ACC_Y, F4_PEAK_TO_PEAK_GYR_X, F5_PEAK_TO_PEAK_ACC_X, F6_ABS_MEAN_GYR_V, F7_ENERGY_GYR_X, F8_VARIANCE_ACC_Y, F9_ABS_MEAN_ACC_V, F10_MEAN_GYR_Y, F11_PEAK_TO_PEAK_GYR_Y, F12_PEAK_TO_PEAK_ACC_Y, F13_VARIANCE_GYR_Y, F14_MINIMUM_ACC_Z, F15_MEAN_ACC_Z
+
+=============== Complete trainging data statistics ===============
+
+Confusion Matrix:
+                double_flick	double_pinch	double_side_tap	null	pinch_hold	  <- classified as
+double_flick    206	0	0	0	0	
+double_pinch    0	203	0	0	3	
+double_side_tap 0	0	198	7	1	
+null            0	2	1	197	6	
+pinch_hold      0	13	0	5	188	
+
+Total Number of Instances: 1030
+Correctly Classified Instances: 992
+Incorrectly Classified Instances: 38
+
+Accuracy:       96.31 %
+Cohen's kappa:  95.39 %
+
+Report:         precision	recall	support
+double_flick    1.00	1.00	206
+double_pinch    0.93	0.99	206
+double_side_tap 0.99	0.96	206
+null            0.94	0.96	206
+pinch_hold      0.95	0.91	206
+avg/total       0.96	0.96	1030

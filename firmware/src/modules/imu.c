@@ -336,10 +336,12 @@ static void imu_emit_slot(uint8_t slot_index, size_t *pair_count, bool force_int
 
 static void imu_emit_sample_batch(const struct bt_app_imu_sample *batch, size_t batch_count)
 {
+#if IS_ENABLED(CONFIG_BT)
     if (IS_ENABLED(CONFIG_CLASSIFIER_NONE) ||
         IS_ENABLED(CONFIG_CLASSIFIER_DEBUG_STREAM)) {
         bt_app_send_imu_samples(batch, batch_count);
     }
+#endif
 
     if (imu_sample_callback != NULL) {
         imu_sample_callback(batch, batch_count);
@@ -552,6 +554,7 @@ static void imu_stream_thread_fn(void *arg1, void *arg2, void *arg3)
             uint32_t cycle_start = k_cycle_get_32();
             int mlc_result = clf_mlc_poll_result(&class_id, &score, &raw_code);
             classifier_benchmark_record(k_cycle_get_32() - cycle_start);
+#if IS_ENABLED(CONFIG_BT)
             if (mlc_result == 0) {
                 bt_app_send_classification(BT_APP_CLASSIFIER_MLC,
                                            class_id,
@@ -559,6 +562,9 @@ static void imu_stream_thread_fn(void *arg1, void *arg2, void *arg3)
                                            score,
                                            imu_sample_id);
             }
+#else
+            ARG_UNUSED(mlc_result);
+#endif
         }
 #if IS_ENABLED(CONFIG_CLASSIFIER_BENCHMARK_MODE)
         /* The MEMS Studio MLC owns sensing in the benchmark build. Do not

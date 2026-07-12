@@ -1,0 +1,52 @@
+F3_PEAK_TO_PEAK_GYR_X <= 34.039101
+|   F1_MAXIMUM_GYR_Y <= 5.093750
+|   |   F5_MINIMUM_ACC_Y <= -0.947510
+|   |   |   F13_MEAN_GYR_Y <= -0.125412 : null (5/1.0)
+|   |   |   F13_MEAN_GYR_Y > -0.125412 : double_side_tap (174)
+|   |   F5_MINIMUM_ACC_Y > -0.947510 : null (169/15.0)
+|   F1_MAXIMUM_GYR_Y > 5.093750
+|   |   F8_ABS_MEAN_GYR_V <= 2.138670
+|   |   |   F13_MEAN_GYR_Y <= 0.202758
+|   |   |   |   F14_ENERGY_GYR_Y <= 771.000000 : null (21/3.0)
+|   |   |   |   F14_ENERGY_GYR_Y > 771.000000
+|   |   |   |   |   F2_MINIMUM_GYR_X <= -2.714845 : pinch_hold (7/1.0)
+|   |   |   |   |   F2_MINIMUM_GYR_X > -2.714845 : double_pinch (6)
+|   |   |   F13_MEAN_GYR_Y > 0.202758 : pinch_hold (177/5.0)
+|   |   F8_ABS_MEAN_GYR_V > 2.138670
+|   |   |   F6_VARIANCE_ACC_Y <= 0.089020 : double_pinch (174/5.0)
+|   |   |   F6_VARIANCE_ACC_Y > 0.089020 : null (11/1.0)
+F3_PEAK_TO_PEAK_GYR_X > 34.039101 : double_flick (187)
+
+Number of Leaves: 10
+Size of the tree: 19
+
+Classes:
+=> double_flick, double_pinch, double_side_tap, null, pinch_hold
+
+Features:
+=> F1_MAXIMUM_GYR_Y, F2_MINIMUM_GYR_X, F3_PEAK_TO_PEAK_GYR_X, F4_PEAK_TO_PEAK_ACC_X, F5_MINIMUM_ACC_Y, F6_VARIANCE_ACC_Y, F7_PEAK_TO_PEAK_ACC_Y, F8_ABS_MEAN_GYR_V, F9_MAXIMUM_GYR_X, F10_MINIMUM_ACC_X, F11_ABS_MEAN_ACC_V, F12_MAXIMUM_ACC_Y, F13_MEAN_GYR_Y, F14_ENERGY_GYR_Y, F15_ENERGY_GYR_X
+
+=============== Complete trainging data statistics ===============
+
+Confusion Matrix:
+                double_flick	double_pinch	double_side_tap	null	pinch_hold	  <- classified as
+double_flick    207	0	0	0	0	
+double_pinch    1	197	0	2	7	
+double_side_tap 0	0	193	14	0	
+null            0	0	0	207	0	
+pinch_hold      0	5	0	5	197	
+
+Total Number of Instances: 1035
+Correctly Classified Instances: 1001
+Incorrectly Classified Instances: 34
+
+Accuracy:       96.71 %
+Cohen's kappa:  95.89 %
+
+Report:         precision	recall	support
+double_flick    1.00	1.00	207
+double_pinch    0.98	0.95	207
+double_side_tap 1.00	0.93	207
+null            0.91	1.00	207
+pinch_hold      0.97	0.95	207
+avg/total       0.97	0.97	1035
