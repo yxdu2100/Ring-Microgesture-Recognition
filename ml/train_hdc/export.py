@@ -8,10 +8,15 @@ from pathlib import Path
 
 import numpy as np
 
-from ringdata import load_sessions, segment_sessions
+from ringdata import apply_manifest, load_sessions, segment_sessions
 from ringdata.splits import build_or_load_splits, select_windows
 from train_hdc.encode import HDC_LEVEL_COUNT, fit_level_bounds, pack_bits, make_codebooks
-from train_hdc.train import DEFAULT_ENCODING_MODE, _class_bits, train_hdc
+from train_hdc.train import (
+    DEFAULT_ENCODING_MODE,
+    _class_bits,
+    fit_rejection_thresholds,
+    train_hdc,
+)
 
 
 def _git_hash(path: Path) -> str:
@@ -46,6 +51,8 @@ def export_header(windows, splits: dict, out_path: Path, dim: int = 2048, mode: 
     codebooks = make_codebooks(dim=dim, level_min=lo, level_max=hi)
     memories = train_hdc(train_w, codebooks, mode=mode)
     class_bits = _class_bits(memories, codebooks)
+    val_w = select_windows(windows, splits["cross_session"].get("val", []))
+    thresholds = fit_rejection_thresholds(val_w, memories, codebooks, mode=mode)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w") as f:
         f.write("#ifndef GENERATED_HDC_MEMORIES_H\n#define GENERATED_HDC_MEMORIES_H\n\n")
@@ -57,6 +64,9 @@ def export_header(windows, splits: dict, out_path: Path, dim: int = 2048, mode: 
         f.write(f"#define HDC_LEVEL_COUNT {HDC_LEVEL_COUNT}U\n")
         f.write("#define HDC_CHANNEL_COUNT 6U\n")
         f.write("#define HDC_CLASS_VECTOR_COUNT 5U\n\n")
+        f.write(f"#define HDC_REJECTION_MAX_DISTANCE {int(round(thresholds.max_distance_fraction * dim))}U\n")
+        f.write(f"#define HDC_REJECTION_MIN_MARGIN {int(round(thresholds.min_margin_fraction * dim))}U\n")
+        f.write(f"// validation_rejection_macro_f1: {thresholds.validation_macro_f1:.6f}\n\n")
         f.write("static const int16_t hdc_level_min[HDC_CHANNEL_COUNT] = { ")
         f.write(", ".join(f"{int(round(x))}" for x in codebooks.level_min))
         f.write(" };\n")
@@ -74,15 +84,20 @@ def export_header(windows, splits: dict, out_path: Path, dim: int = 2048, mode: 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default="data")
-    parser.add_argument("--splits", default="ml/splits.json")
+    parser.add_argument("--manifest", default="ml/dataset_manifest.csv")
+    parser.add_argument("--splits", default="ml/splits_within_user.json")
     parser.add_argument("--out", default="firmware/src/classifiers/generated/hdc_memories.h")
     parser.add_argument("--mode", default=DEFAULT_ENCODING_MODE, choices=["absolute", "bag", "ngram"])
     parser.add_argument("--drop-invalid-windows", action="store_true")
     args = parser.parse_args()
-    sessions = load_sessions(args.data_dir)
-    windows = segment_sessions(sessions, enforce_perform_window=not args.drop_invalid_windows)
-    if args.drop_invalid_windows:
-        windows = [w for w in windows if w.perform_window_overrun_samples <= 0]
+    sessions, manifest_warnings = apply_manifest(load_sessions(args.data_dir), args.manifest)
+    for warning in manifest_warnings:
+        print(f"warning: {warning}")
+    # Segment first, then exclude the rare cue whose detected onset leaves too
+    # little room for a complete window.  Failing the entire export here made
+    # the default command unusable and tempted manual, non-reproducible edits.
+    windows = segment_sessions(sessions, enforce_perform_window=False)
+    windows = [w for w in windows if w.perform_window_overrun_samples <= 0]
     splits = build_or_load_splits(windows, args.splits)
     export_header(windows, splits, Path(args.out), mode=args.mode)
     print(f"wrote {args.out}")

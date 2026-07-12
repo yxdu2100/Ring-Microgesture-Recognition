@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ringdata import CLASS_NAMES, load_sessions, segment_sessions
+from ringdata import CLASS_NAMES, apply_manifest, load_sessions, segment_sessions
 from ringdata.splits import build_or_load_splits, select_windows
 from train_mlc.arff import read_arff
 from train_mlc.export_memsstudio import raw_to_physical as export_raw_to_physical
@@ -215,7 +215,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--arff", required=True)
     parser.add_argument("--data-dir", default="data")
-    parser.add_argument("--splits", default="ml/splits.json")
+    parser.add_argument("--manifest", default="ml/dataset_manifest.csv")
+    parser.add_argument("--splits", default="ml/splits_within_user.json")
     parser.add_argument("--out-dir", default="ml/results/mlc_st")
     parser.add_argument("--sample-count", type=int, default=10)
     parser.add_argument("--gyro-lsb-scale", type=float, default=None)
@@ -224,11 +225,12 @@ def main() -> None:
     args = parser.parse_args()
 
     arff = read_arff(args.arff)
-    sessions = load_sessions(args.data_dir)
-    windows = segment_sessions(sessions, enforce_perform_window=not args.drop_invalid_windows)
-    if args.drop_invalid_windows:
-        windows = [w for w in windows if w.perform_window_overrun_samples <= 0]
-    splits = build_or_load_splits(windows, args.splits, seed=SEED)
+    sessions, warnings = apply_manifest(load_sessions(args.data_dir), args.manifest)
+    for warning in warnings:
+        print(f"warning: {warning}")
+    windows = segment_sessions(sessions, enforce_perform_window=False)
+    windows = [w for w in windows if w.perform_window_overrun_samples <= 0]
+    splits = build_or_load_splits(windows, args.splits)
     ordered_windows, counts = mems_ordered_windows(
         windows,
         splits,

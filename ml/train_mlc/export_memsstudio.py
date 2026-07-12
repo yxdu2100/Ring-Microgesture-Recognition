@@ -18,11 +18,12 @@ tail (negligible).
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
 
-from ringdata import CLASS_NAMES, load_sessions, segment_sessions
+from ringdata import CLASS_NAMES, apply_manifest, load_sessions, segment_sessions
 from ringdata.splits import build_or_load_splits, select_windows
 
 # Exact header MEMS Studio's reader matches on. Do NOT rename columns.
@@ -44,9 +45,10 @@ def raw_to_physical(raw: np.ndarray, acc_fs: int, gyr_fs: int) -> np.ndarray:
     return out
 
 
-def export_windows(windows, splits: dict, out_dir: Path, acc_fs: int, gyr_fs: int,
-                   already_physical: bool, window_length: int) -> int:
-    train_ids = splits["cross_session"]["train"]
+def export_windows(windows, split: dict, out_dir: Path, acc_fs: int, gyr_fs: int,
+                   already_physical: bool, window_length: int,
+                   balance_classes: bool = True) -> int:
+    train_ids = split["train"]
     selected = select_windows(windows, train_ids)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -54,20 +56,31 @@ def export_windows(windows, splits: dict, out_dir: Path, acc_fs: int, gyr_fs: in
     for w in selected:
         by_label.setdefault(w.label, []).append(w)
 
-    total = 0
+    valid_by_label: dict[str, list] = {}
     for label in CLASS_NAMES:
         group = sorted(
             by_label.get(label, []),
             key=lambda w: (w.session_id, w.start_sample_id, w.window_id),
         )
+        valid_by_label[label] = []
+        for w in group:
+            if w.raw.shape[0] != window_length:
+                print(f"  skip {w.window_id}: {w.raw.shape[0]} samples != window_length {window_length}")
+                continue
+            valid_by_label[label].append(w)
+
+    nonempty_counts = [len(group) for group in valid_by_label.values() if group]
+    target = min(nonempty_counts) if balance_classes and nonempty_counts else None
+    total = 0
+    for label in CLASS_NAMES:
+        group = valid_by_label[label]
+        if target is not None and len(group) > target:
+            # Even spacing through session/start-sorted windows prevents the
+            # null cap from silently selecting only the first null recording.
+            indices = np.linspace(0, len(group) - 1, target, dtype=np.int64)
+            group = [group[int(index)] for index in indices]
         rows = []
         for w in group:
-            n = w.raw.shape[0]
-            if n != window_length:
-                # A wrong-length window would shift every subsequent window in
-                # this class file, so drop it rather than corrupt alignment.
-                print(f"  skip {w.window_id}: {n} samples != window_length {window_length}")
-                continue
             rows.append(w.raw if already_physical
                         else raw_to_physical(w.raw, acc_fs, gyr_fs))
         if not rows:
@@ -85,7 +98,8 @@ def export_windows(windows, splits: dict, out_dir: Path, acc_fs: int, gyr_fs: in
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default="data")
-    parser.add_argument("--splits", default="ml/splits.json")
+    parser.add_argument("--manifest", default="ml/dataset_manifest.csv")
+    parser.add_argument("--splits", default="ml/splits_within_user.json")
     parser.add_argument("--out-dir", default="ml/results/memsstudio_export")
     parser.add_argument("--drop-invalid-windows", action="store_true")
     parser.add_argument("--window-length", type=int, default=128,
@@ -97,21 +111,53 @@ def main() -> None:
                         help="Gyroscope full-scale in dps (must match MEMS Studio)")
     parser.add_argument("--already-physical", action="store_true",
                         help="Set if window.raw is already in mg/dps (skip LSB scaling)")
+    parser.add_argument("--all-folds", action="store_true",
+                        help="Export one MEMS Studio training bundle per within-user fold")
+    parser.add_argument("--keep-class-imbalance", action="store_true",
+                        help="Do not cap every MEMS Studio class to the smallest class")
+    parser.add_argument("--rebuild-splits", action="store_true")
     args = parser.parse_args()
 
-    sessions = load_sessions(args.data_dir)
-    windows = segment_sessions(sessions, enforce_perform_window=not args.drop_invalid_windows)
-    if args.drop_invalid_windows:
-        dropped = [w for w in windows if w.perform_window_overrun_samples > 0]
-        windows = [w for w in windows if w.perform_window_overrun_samples <= 0]
-        for w in dropped:
-            print(f"dropping invalid overrun window: {w.window_id} "
-                  f"overrun={w.perform_window_overrun_samples}")
-    splits = build_or_load_splits(windows, args.splits)
-    n = export_windows(windows, splits, Path(args.out_dir), args.acc_fs, args.gyr_fs,
-                       args.already_physical, args.window_length)
-    print(f"exported {n} train windows across {len(CLASS_NAMES)} class files "
-          f"to {args.out_dir} (acc_fs=+/-{args.acc_fs}g, gyr_fs=+/-{args.gyr_fs}dps, "
+    sessions, manifest_warnings = apply_manifest(load_sessions(args.data_dir), args.manifest)
+    for warning in manifest_warnings:
+        print(f"warning: {warning}")
+    windows = segment_sessions(sessions, enforce_perform_window=False)
+    dropped = [w for w in windows if w.perform_window_overrun_samples > 0]
+    windows = [w for w in windows if w.perform_window_overrun_samples <= 0]
+    for w in dropped:
+        print(f"dropping invalid overrun window: {w.window_id} overrun={w.perform_window_overrun_samples}")
+    splits = build_or_load_splits(
+        windows,
+        args.splits,
+        force_rebuild=args.rebuild_splits,
+    )
+    selected_splits = (
+        splits["within_user_session_folds"]
+        if args.all_folds else
+        [{"fold_id": "cross_session", **splits["cross_session"]}]
+    )
+    total = 0
+    for split in selected_splits:
+        fold_out = Path(args.out_dir) / split["fold_id"] if args.all_folds else Path(args.out_dir)
+        n = export_windows(
+            windows,
+            split,
+            fold_out,
+            args.acc_fs,
+            args.gyr_fs,
+            args.already_physical,
+            args.window_length,
+            balance_classes=not args.keep_class_imbalance,
+        )
+        (fold_out / "split_sessions.json").write_text(json.dumps({
+            "fold_id": split["fold_id"],
+            "train_sessions": split["train_sessions"],
+            "val_sessions": split["val_sessions"],
+            "test_sessions": split["test_sessions"],
+        }, indent=2) + "\n")
+        total += n
+    print(f"exported {total} train windows to {args.out_dir} "
+          f"(acc_fs=+/-{args.acc_fs}g, gyr_fs=+/-{args.gyr_fs}dps, "
           f"{'physical' if args.already_physical else 'LSB->physical'})")
 
 

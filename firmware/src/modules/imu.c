@@ -7,6 +7,7 @@
 #include <string.h>
 #include "imu.h"
 #include "imu_reg.h"
+#include "../benchmark.h"
 #include "../../ble/ble.h"
 
 #if IS_ENABLED(CONFIG_CLASSIFIER_MLC)
@@ -529,8 +530,12 @@ static void imu_stream_thread_fn(void *arg1, void *arg2, void *arg3)
          * scheduling delay) the line stays high and no new rising edge is
          * produced. The timeout guarantees we wake and re-check regardless,
          * so the stream can no longer wedge permanently. */
-        (void)k_msgq_get(&imu_drdy_msgq, &interrupt_timestamp_us,
-                         K_MSEC(IMU_POLL_FALLBACK_MS));
+        (void)k_msgq_get(
+            &imu_drdy_msgq,
+            &interrupt_timestamp_us,
+            (IS_ENABLED(CONFIG_CLASSIFIER_MLC) && IS_ENABLED(CONFIG_CLASSIFIER_BENCHMARK_MODE))
+                ? K_FOREVER
+                : K_MSEC(IMU_POLL_FALLBACK_MS));
         ARG_UNUSED(interrupt_timestamp_us);
 
         if (!imu_stream_enabled) {
@@ -544,7 +549,10 @@ static void imu_stream_thread_fn(void *arg1, void *arg2, void *arg3)
             uint8_t raw_code = 0U;
             int16_t score = 0;
 
-            if (clf_mlc_poll_result(&class_id, &score, &raw_code) == 0) {
+            uint32_t cycle_start = k_cycle_get_32();
+            int mlc_result = clf_mlc_poll_result(&class_id, &score, &raw_code);
+            classifier_benchmark_record(k_cycle_get_32() - cycle_start);
+            if (mlc_result == 0) {
                 bt_app_send_classification(BT_APP_CLASSIFIER_MLC,
                                            class_id,
                                            raw_code,
@@ -552,6 +560,11 @@ static void imu_stream_thread_fn(void *arg1, void *arg2, void *arg3)
                                            imu_sample_id);
             }
         }
+#if IS_ENABLED(CONFIG_CLASSIFIER_BENCHMARK_MODE)
+        /* The MEMS Studio MLC owns sensing in the benchmark build. Do not
+         * enable or drain the raw FIFO: the MCU wakes only for MLC output. */
+        continue;
+#endif
 #endif
 
         /* Drain the FIFO fully. Re-reading the status and looping until the
@@ -751,6 +764,18 @@ int imu_start_streaming(void)
     }
 
     k_msgq_purge(&imu_drdy_msgq);
+
+#if IS_ENABLED(CONFIG_CLASSIFIER_MLC) && IS_ENABLED(CONFIG_CLASSIFIER_BENCHMARK_MODE)
+    /* clf_init() already applied the MEMS Studio configuration, including the
+     * MLC interrupt route. Preserve it and only arm the host GPIO wake source. */
+    imu_reset_fifo_parser_state();
+    imu_stream_enabled = true;
+    ret = gpio_pin_interrupt_configure(gpio1_dev, IMU_INT_PIN, GPIO_INT_EDGE_TO_ACTIVE);
+    if (ret != 0) {
+        imu_stream_enabled = false;
+    }
+    return ret;
+#endif
 
     ret = imu_configure_streaming_profile();
     if (ret != 0) {

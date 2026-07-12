@@ -1,242 +1,251 @@
-"""Frozen cross-session and within-session split handling."""
+"""Frozen participant/session-grouped split handling."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Iterable
 
 from .segment import CLASS_NAMES, Window
 
-DEFAULT_SEED = 20260706
-SPLIT_VERSION = 2
-EXCLUDED_SESSIONS = {"20260706_002"}
-WINDOW_SAMPLES = 128
-NULL_STEP_SAMPLES = 64
+DEFAULT_SEED = 20260711
+SPLIT_VERSION = 3
+EXCLUDED_SESSIONS: set[str] = set()  # compatibility; exclusions belong in the manifest
+PRIMARY_FOLDS = 5
+VALIDATION_GESTURE_SESSIONS = 2
 
 
 def _ids_by_session(windows: Iterable[Window]) -> dict[str, list[str]]:
     by_session: dict[str, list[str]] = defaultdict(list)
     for window in windows:
         by_session[window.session_id].append(window.window_id)
-    return dict(by_session)
+    return {key: sorted(value) for key, value in by_session.items()}
 
 
-def _labels_by_session(windows: Iterable[Window]) -> dict[str, set[str]]:
-    labels: dict[str, set[str]] = defaultdict(set)
+def _session_metadata(windows: Iterable[Window]) -> dict[str, dict]:
+    out: dict[str, dict] = {}
     for window in windows:
-        labels[window.session_id].add(window.label)
-    return dict(labels)
-
-
-def _flatten(session_ids: list[str], by_session: dict[str, list[str]]) -> list[str]:
-    out: list[str] = []
-    for session_id in session_ids:
-        out.extend(sorted(by_session[session_id]))
+        row = {
+            "participant_id": window.participant_id,
+            "data_role": window.data_role,
+            "usage": window.usage,
+            "guided_protocol": window.guided_protocol,
+            "collection_date": window.session_id[:8],
+        }
+        previous = out.setdefault(window.session_id, row)
+        if previous != row:
+            raise ValueError(f"inconsistent metadata within session {window.session_id}")
     return out
 
 
-def _filter_supported_windows(windows: list[Window]) -> list[Window]:
-    return [w for w in windows if w.session_id not in EXCLUDED_SESSIONS]
+def _dataset_hash(metadata: dict[str, dict], by_session: dict[str, list[str]]) -> str:
+    payload = [
+        {
+            "session_id": session_id,
+            **metadata[session_id],
+            "window_ids": by_session[session_id],
+        }
+        for session_id in sorted(by_session)
+    ]
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()[:16]
 
 
-def _build_cross_session(windows: list[Window], seed: int) -> dict:
-    by_session = _ids_by_session(windows)
-    labels_by_session = _labels_by_session(windows)
-    sessions = sorted(by_session)
+def _primary_participant(metadata: dict[str, dict]) -> str:
+    counts = Counter(
+        row["participant_id"]
+        for row in metadata.values()
+        if row["data_role"] == "gesture" and row["usage"] != "exclude"
+    )
+    if not counts:
+        raise ValueError("no active gesture sessions in dataset")
+    return sorted(counts, key=lambda participant: (-counts[participant], participant))[0]
+
+
+def _balanced_test_groups(
+    sessions: list[str],
+    metadata: dict[str, dict],
+    folds: int,
+    seed: int,
+) -> list[list[str]]:
+    if len(sessions) < folds:
+        raise ValueError(f"need at least {folds} gesture sessions; found {len(sessions)}")
     rng = random.Random(seed)
-    shuffled = sessions[:]
-    rng.shuffle(shuffled)
-
-    guided_sessions = [s for s in shuffled if labels_by_session[s] - {"null"}]
-    null_sessions = [s for s in shuffled if labels_by_session[s] == {"null"}]
-
-    if len(guided_sessions) >= 2 and len(null_sessions) >= 2:
-        test_sessions = sorted([guided_sessions[0], null_sessions[0]])
-        val_sessions = sorted([null_sessions[1]]) if len(null_sessions) >= 3 else []
-        held = set(test_sessions) | set(val_sessions)
-        train_sessions = sorted(s for s in sessions if s not in held)
-    elif len(guided_sessions) >= 2 and len(null_sessions) >= 1:
-        test_sessions = sorted([guided_sessions[0], null_sessions[0]])
-        val_sessions = []
-        held = set(test_sessions)
-        train_sessions = sorted(s for s in sessions if s not in held)
-    else:
-        rng.shuffle(sessions)
-
-        if len(sessions) >= 3:
-            n_test = max(1, round(0.2 * len(sessions)))
-            n_val = max(1, round(0.2 * len(sessions)))
-            test_sessions = sorted(sessions[:n_test])
-            val_sessions = sorted(sessions[n_test : n_test + n_val])
-            train_sessions = sorted(sessions[n_test + n_val :])
-        elif len(sessions) == 2:
-            train_sessions = sorted([sessions[0]])
-            val_sessions = []
-            test_sessions = sorted([sessions[1]])
-        else:
-            train_sessions = sessions
-            val_sessions = []
-            test_sessions = []
-
-    return {
-        "train_sessions": train_sessions,
-        "val_sessions": val_sessions,
-        "test_sessions": test_sessions,
-        "train": _flatten(train_sessions, by_session),
-        "val": _flatten(val_sessions, by_session),
-        "test": _flatten(test_sessions, by_session),
-    }
+    strata: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for session_id in sessions:
+        row = metadata[session_id]
+        strata[(row["collection_date"], row["guided_protocol"])].append(session_id)
+    groups: list[list[str]] = [[] for _ in range(folds)]
+    stratum_counts: list[Counter] = [Counter() for _ in range(folds)]
+    for stratum, members in sorted(strata.items(), key=lambda item: (-len(item[1]), item[0])):
+        members = sorted(members)
+        rng.shuffle(members)
+        for member in members:
+            target = min(
+                range(folds),
+                key=lambda idx: (len(groups[idx]), stratum_counts[idx][stratum], idx),
+            )
+            groups[target].append(member)
+            stratum_counts[target][stratum] += 1
+    return [sorted(group) for group in groups]
 
 
-def _split_sorted_groups(groups: list[tuple[int, int, list[str]]]) -> dict[str, list[str]]:
-    """Split contiguous timeline groups 70/15/15 without breaking a group."""
-    if len(groups) < 3:
-        return {"train": [i for *_unused, ids in groups for i in ids], "val": [], "test": []}
-
-    groups = sorted(groups, key=lambda item: (item[0], item[1], item[2][0]))
-    n = len(groups)
-    n_train = max(1, round(0.70 * n))
-    n_val = max(1, round(0.15 * n))
-    if n_train + n_val >= n:
-        n_train = max(1, n - 2)
-        n_val = 1
-
-    chunks = {
-        "train": groups[:n_train],
-        "val": groups[n_train : n_train + n_val],
-        "test": groups[n_train + n_val :],
-    }
-    return {
-        split: [window_id for _start, _end, ids in chunk for window_id in ids]
-        for split, chunk in chunks.items()
-    }
+def _choose_validation_sessions(
+    candidates: list[str],
+    count: int,
+    seed: int,
+) -> list[str]:
+    ordered = sorted(candidates)
+    random.Random(seed).shuffle(ordered)
+    return sorted(ordered[: min(count, len(ordered))])
 
 
-def _build_null_timeline_groups(session_windows: list[Window]) -> list[tuple[int, int, list[str]]]:
-    ordered = sorted(session_windows, key=lambda w: (w.start_sample_id, w.end_sample_id, w.window_id))
-    if len(ordered) < 3:
-        return [(w.start_sample_id, w.end_sample_id, [w.window_id]) for w in ordered]
-
-    start = min(w.start_sample_id for w in ordered)
-    end = max(w.end_sample_id for w in ordered) + 1
-    span = max(1, end - start)
-    b1 = start + round(0.70 * span)
-    b2 = start + round(0.85 * span)
-    blocks = [(start, b1), (b1, b2), (b2, end)]
-    out: list[tuple[int, int, list[str]]] = []
-
-    for block_start, block_end in blocks:
-        ids = [
-            w.window_id
-            for w in ordered
-            if w.start_sample_id >= block_start and w.end_sample_id < block_end
-        ]
-        if ids:
-            out.append((block_start, block_end - 1, ids))
-    return out
+def _flatten(session_ids: Iterable[str], by_session: dict[str, list[str]]) -> list[str]:
+    return [window_id for session_id in sorted(session_ids) for window_id in by_session[session_id]]
 
 
-def _build_within_session(windows: list[Window], seed: int) -> dict:
-    train: list[str] = []
-    val: list[str] = []
-    test: list[str] = []
-    by_session: dict[str, list[Window]] = defaultdict(list)
-    for window in windows:
-        by_session[window.session_id].append(window)
-
-    for session_windows in by_session.values():
-        labels = {w.label for w in session_windows}
-        if labels == {"null"}:
-            split_ids = _split_sorted_groups(_build_null_timeline_groups(session_windows))
-        else:
-            by_instance: dict[tuple[str, int], list[Window]] = defaultdict(list)
-            for window in session_windows:
-                instance_key = (window.label, window.cue_sample_id or window.start_sample_id)
-                by_instance[instance_key].append(window)
-            groups = []
-            for instance_windows in by_instance.values():
-                groups.append(
-                    (
-                        min(w.start_sample_id for w in instance_windows),
-                        max(w.end_sample_id for w in instance_windows),
-                        sorted(w.window_id for w in instance_windows),
-                    )
-                )
-            split_ids = _split_sorted_groups(groups)
-
-        train.extend(split_ids["train"])
-        val.extend(split_ids["val"])
-        test.extend(split_ids["test"])
-
-    return {
-        "kind": "time_contiguous_grouped",
-        "train": sorted(train),
-        "val": sorted(val),
-        "test": sorted(test),
-    }
-
-
-def _build_cross_session_loso(windows: list[Window], seed: int) -> list[dict]:
-    by_session = _ids_by_session(windows)
-    labels_by_session = _labels_by_session(windows)
-    sessions = sorted(by_session)
-    gesture_sessions = sorted(s for s in sessions if labels_by_session[s] - {"null"})
-    null_sessions = sorted(s for s in sessions if labels_by_session[s] == {"null"})
-
-    if len(gesture_sessions) < 2:
-        return []
-
-    folds = []
-    for idx, test_gesture in enumerate(gesture_sessions):
-        test_null = null_sessions[idx % len(null_sessions)] if null_sessions else None
-        val_gesture_candidates = [s for s in gesture_sessions if s != test_gesture]
-        val_gesture = val_gesture_candidates[idx % len(val_gesture_candidates)]
-        val_null_candidates = [s for s in null_sessions if s != test_null]
-        val_null = val_null_candidates[idx % len(val_null_candidates)] if val_null_candidates else None
-
-        test_sessions = [test_gesture] + ([test_null] if test_null else [])
-        val_sessions = [val_gesture] + ([val_null] if val_null else [])
-        held = set(test_sessions) | set(val_sessions)
-        train_sessions = sorted(s for s in sessions if s not in held)
-
+def _build_within_user_folds(
+    by_session: dict[str, list[str]],
+    metadata: dict[str, dict],
+    participant_id: str,
+    seed: int,
+    fold_count: int = PRIMARY_FOLDS,
+) -> list[dict]:
+    gesture_sessions = sorted(
+        session_id
+        for session_id, row in metadata.items()
+        if row["participant_id"] == participant_id
+        and row["data_role"] == "gesture"
+        and row["usage"] in {"fold", "auto"}
+    )
+    structured_train = sorted(
+        session_id
+        for session_id, row in metadata.items()
+        if row["data_role"] == "structured_null" and row["usage"] in {"train", "auto"}
+    )
+    structured_val = sorted(
+        session_id
+        for session_id, row in metadata.items()
+        if row["data_role"] == "structured_null" and row["usage"] == "validation"
+    )
+    development_null = sorted(
+        session_id
+        for session_id, row in metadata.items()
+        if row["data_role"] == "free_living_null" and row["usage"] == "development"
+    )
+    final_test_null = sorted(
+        session_id
+        for session_id, row in metadata.items()
+        if row["data_role"] == "free_living_null" and row["usage"] == "final_test"
+    )
+    test_groups = _balanced_test_groups(gesture_sessions, metadata, fold_count, seed)
+    folds: list[dict] = []
+    for index, test_gesture_sessions in enumerate(test_groups):
+        remaining = sorted(set(gesture_sessions) - set(test_gesture_sessions))
+        val_gesture_sessions = _choose_validation_sessions(
+            remaining,
+            VALIDATION_GESTURE_SESSIONS,
+            seed + 1009 * (index + 1),
+        )
+        train_gesture_sessions = sorted(set(remaining) - set(val_gesture_sessions))
+        train_sessions = sorted(train_gesture_sessions + structured_train)
+        val_sessions = sorted(val_gesture_sessions + structured_val)
         folds.append(
             {
-                "fold_id": f"loso_{idx + 1:02d}_{test_gesture}",
-                "test_gesture_session": test_gesture,
-                "test_null_session": test_null or "",
-                "val_gesture_session": val_gesture,
-                "val_null_session": val_null or "",
+                "fold_id": f"within_user_{index + 1:02d}",
+                "participant_id": participant_id,
+                "train_gesture_sessions": train_gesture_sessions,
+                "val_gesture_sessions": val_gesture_sessions,
+                "test_gesture_sessions": test_gesture_sessions,
+                "train_structured_null_sessions": structured_train,
+                "val_structured_null_sessions": structured_val,
+                "development_free_living_sessions": development_null,
+                "final_test_free_living_sessions": final_test_null,
                 "train_sessions": train_sessions,
-                "val_sessions": sorted(val_sessions),
-                "test_sessions": sorted(test_sessions),
+                "val_sessions": val_sessions,
+                "test_sessions": test_gesture_sessions,
                 "train": _flatten(train_sessions, by_session),
-                "val": _flatten(sorted(val_sessions), by_session),
-                "test": _flatten(sorted(test_sessions), by_session),
+                "val": _flatten(val_sessions, by_session),
+                "test": _flatten(test_gesture_sessions, by_session),
+                "development_null": _flatten(development_null, by_session),
+                "final_test_null": _flatten(final_test_null, by_session),
             }
         )
     return folds
 
 
-def _first_loso_as_cross_session(folds: list[dict]) -> dict:
-    if not folds:
-        return {"train_sessions": [], "val_sessions": [], "test_sessions": [], "train": [], "val": [], "test": []}
-    return {k: v for k, v in folds[0].items() if k != "fold_id"}
+def _build_lopo_folds(
+    by_session: dict[str, list[str]],
+    metadata: dict[str, dict],
+    seed: int,
+) -> list[dict]:
+    participants = sorted(
+        {
+            row["participant_id"]
+            for row in metadata.values()
+            if row["data_role"] == "gesture" and row["usage"] != "exclude"
+        }
+    )
+    if len(participants) < 2:
+        return []
+    folds: list[dict] = []
+    for index, held_participant in enumerate(participants):
+        test_gesture = sorted(
+            session_id
+            for session_id, row in metadata.items()
+            if row["participant_id"] == held_participant and row["data_role"] == "gesture"
+        )
+        train_gesture = sorted(
+            session_id
+            for session_id, row in metadata.items()
+            if row["participant_id"] != held_participant and row["data_role"] == "gesture"
+        )
+        train_null = sorted(
+            session_id
+            for session_id, row in metadata.items()
+            if row["participant_id"] != held_participant
+            and row["data_role"] == "structured_null"
+            and row["usage"] != "exclude"
+        )
+        val_gesture = _choose_validation_sessions(train_gesture, 1, seed + index)
+        actual_train_gesture = sorted(set(train_gesture) - set(val_gesture))
+        train_sessions = sorted(actual_train_gesture + train_null)
+        folds.append(
+            {
+                "fold_id": f"lopo_{held_participant}",
+                "held_participant_id": held_participant,
+                "train_sessions": train_sessions,
+                "val_sessions": val_gesture,
+                "test_sessions": test_gesture,
+                "train": _flatten(train_sessions, by_session),
+                "val": _flatten(val_gesture, by_session),
+                "test": _flatten(test_gesture, by_session),
+            }
+        )
+    return folds
 
 
 def build_splits(windows: list[Window], seed: int = DEFAULT_SEED) -> dict:
-    windows = _filter_supported_windows(windows)
-    loso = _build_cross_session_loso(windows, seed)
+    by_session = _ids_by_session(windows)
+    metadata = _session_metadata(windows)
+    participant_id = _primary_participant(metadata)
+    within_user = _build_within_user_folds(by_session, metadata, participant_id, seed)
+    if not within_user:
+        raise ValueError("could not build within-user session folds")
     return {
         "version": SPLIT_VERSION,
         "seed": seed,
         "classes": CLASS_NAMES,
-        "excluded_sessions": sorted(EXCLUDED_SESSIONS),
-        "cross_session": _first_loso_as_cross_session(loso) if loso else _build_cross_session(windows, seed),
-        "cross_session_loso": loso,
-        "within_session": _build_within_session(windows, seed),
+        "dataset_hash": _dataset_hash(metadata, by_session),
+        "primary_participant_id": participant_id,
+        "session_metadata": metadata,
+        "within_user_session_folds": within_user,
+        "lopo_folds": _build_lopo_folds(by_session, metadata, seed),
+        # Compatibility for single-split trainer/export entry points.
+        "cross_session": {key: value for key, value in within_user[0].items() if key != "fold_id"},
     }
 
 
@@ -247,35 +256,51 @@ def load_splits(path: str | Path) -> dict:
 
 def build_or_load_splits(
     windows: list[Window],
-    path: str | Path = "ml/splits.json",
+    path: str | Path = "ml/splits_within_user.json",
     seed: int = DEFAULT_SEED,
     force_rebuild: bool = False,
 ) -> dict:
     path = Path(path)
+    current = build_splits(windows, seed=seed)
     if path.exists() and not force_rebuild:
         splits = load_splits(path)
-        if splits.get("version") == SPLIT_VERSION:
-            return splits
+        if splits.get("version") != SPLIT_VERSION:
+            raise ValueError(f"{path}: obsolete split version; rebuild explicitly")
+        if splits.get("seed") != seed:
+            raise ValueError(
+                f"{path}: split seed {splits.get('seed')} != requested {seed}; "
+                "use the study split seed or rebuild explicitly"
+            )
+        if splits.get("dataset_hash") != current["dataset_hash"]:
+            raise ValueError(f"{path}: dataset changed; rebuild splits explicitly")
+        return splits
     path.parent.mkdir(parents=True, exist_ok=True)
-    splits = build_splits(windows, seed=seed)
     with path.open("w") as f:
-        json.dump(splits, f, indent=2, sort_keys=True)
+        json.dump(current, f, indent=2, sort_keys=True)
         f.write("\n")
-    return splits
+    return current
 
 
-def select_windows(windows: list[Window], ids: list[str]) -> list[Window]:
-    by_id = {w.window_id: w for w in windows}
-    return [by_id[i] for i in ids if i in by_id]
+def select_windows(windows: list[Window], ids: list[str], *, strict: bool = True) -> list[Window]:
+    by_id = {window.window_id: window for window in windows}
+    missing = [window_id for window_id in ids if window_id not in by_id]
+    if strict and missing:
+        preview = ", ".join(missing[:5])
+        raise ValueError(f"split references {len(missing)} missing windows: {preview}")
+    return [by_id[window_id] for window_id in ids if window_id in by_id]
 
 
 def assert_no_cross_session_leakage(splits: dict) -> None:
-    fold_like = splits.get("cross_session_loso") or [splits["cross_session"]]
-    for fold in fold_like:
+    folds = splits.get("within_user_session_folds") or [splits["cross_session"]]
+    for fold in folds:
         train = set(fold.get("train_sessions", []))
         val = set(fold.get("val_sessions", []))
         test = set(fold.get("test_sessions", []))
         overlap = (train & val) | (train & test) | (val & test)
         if overlap:
-            fold_id = fold.get("fold_id", "cross_session")
-            raise ValueError(f"{fold_id}: cross-session split leakage: {sorted(overlap)}")
+            raise ValueError(f"{fold.get('fold_id', 'cross_session')}: session leakage {sorted(overlap)}")
+        train_null = set(fold.get("train_structured_null_sessions", []))
+        dev_null = set(fold.get("development_free_living_sessions", []))
+        final_null = set(fold.get("final_test_free_living_sessions", []))
+        if train_null & (dev_null | final_null):
+            raise ValueError(f"{fold.get('fold_id')}: free-living null leaked into training")

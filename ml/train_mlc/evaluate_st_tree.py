@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from eval_utils import prediction_report
-from ringdata import CLASS_NAMES, load_sessions, segment_sessions
+from ringdata import CLASS_NAMES, apply_manifest, load_sessions, segment_sessions
 from ringdata.segment import CLASS_TO_ID
 from ringdata.splits import assert_no_cross_session_leakage, build_or_load_splits, select_windows
 from train_mlc.arff import read_arff
@@ -20,12 +20,13 @@ from train_mlc.st_tree import MLCTreeClassifier, ST_TO_PROJECT_CLASS, parse_st_t
 SEED = 20260706
 
 
-def _load_windows(data_dir: str, splits_path: str, drop_invalid_windows: bool):
-    sessions = load_sessions(data_dir)
-    windows = segment_sessions(sessions, enforce_perform_window=not drop_invalid_windows)
-    if drop_invalid_windows:
-        windows = [w for w in windows if w.perform_window_overrun_samples <= 0]
-    splits = build_or_load_splits(windows, splits_path, seed=SEED)
+def _load_windows(data_dir: str, manifest_path: str, splits_path: str, drop_invalid_windows: bool):
+    sessions, warnings = apply_manifest(load_sessions(data_dir), manifest_path)
+    for warning in warnings:
+        print(f"warning: {warning}")
+    windows = segment_sessions(sessions, enforce_perform_window=False)
+    windows = [w for w in windows if w.perform_window_overrun_samples <= 0]
+    splits = build_or_load_splits(windows, splits_path)
     assert_no_cross_session_leakage(splits)
     return sessions, windows, splits
 
@@ -133,9 +134,10 @@ def main() -> None:
     parser.add_argument("--tree", required=True, help="MEMS Studio ST_decision_tree_*.txt export")
     parser.add_argument("--arff", default=None, help="Optional MEMS Studio features.arff used to infer gyro feature scale")
     parser.add_argument("--data-dir", default="data")
-    parser.add_argument("--splits", default="ml/splits.json")
+    parser.add_argument("--manifest", default="ml/dataset_manifest.csv")
+    parser.add_argument("--splits", default="ml/splits_within_user.json")
     parser.add_argument("--results-dir", default="ml/results/mlc_st")
-    parser.add_argument("--split-type", default="cross_session", choices=["cross_session", "within_session"])
+    parser.add_argument("--split-type", default="cross_session", choices=["cross_session"])
     parser.add_argument("--test-session", default=None)
     parser.add_argument("--validation-session", default=None)
     parser.add_argument("--precision", default="both", choices=["fp16", "fp64", "both"])
@@ -152,7 +154,9 @@ def main() -> None:
 
     tree_path = Path(args.tree)
     parsed = parse_st_tree(tree_path)
-    _sessions, windows, splits = _load_windows(args.data_dir, args.splits, args.drop_invalid_windows)
+    _sessions, windows, splits = _load_windows(
+        args.data_dir, args.manifest, args.splits, args.drop_invalid_windows
+    )
     if args.arff:
         arff = read_arff(args.arff)
         ordered_windows, _counts = mems_ordered_windows(

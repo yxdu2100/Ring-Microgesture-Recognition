@@ -1,432 +1,386 @@
-"""One entry point for parsing, segmentation, frozen splits, and evaluations."""
+"""Run the frozen within-user comparison and continuous event evaluation."""
 
 from __future__ import annotations
 
 import argparse
 import csv
 import json
-import subprocess
-from collections import Counter
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
 
 from eval_utils import macro_f1_present_classes, prediction_report
-from ringdata import CLASS_NAMES, load_sessions, resample_windows, segment_sessions
-from ringdata.splits import EXCLUDED_SESSIONS, assert_no_cross_session_leakage, build_or_load_splits, select_windows
-from train_mlc.features import MEMS_STUDIO_GYRO_INTERNAL_PER_LSB
+from ringdata import (
+    CLASS_NAMES,
+    apply_manifest,
+    confirm_consecutive_predictions,
+    load_sessions,
+    match_events_to_gestures,
+    recorded_hours,
+    segment_sessions,
+    stream_windows,
+)
+from ringdata.splits import assert_no_cross_session_leakage, build_or_load_splits, select_windows
 
-SEED = 20260706
+SEED = 20260711
 NULL_CLASS_ID = CLASS_NAMES.index("null")
-WINDOW_SAMPLES = 128
-NULL_STEP_SAMPLES = 64
 
 
-def _session_report(sessions, windows, out_path: Path) -> None:
-    counts = Counter(w.label for w in windows)
-    with out_path.open("w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                "session_id",
-                "mode",
-                "samples",
-                "sample_rate_hz",
-                "gap_count",
-                "missing_samples",
-                "hardware_pct",
-                "marker_go_count",
-                "window_count",
-            ]
-        )
-        for session in sessions:
-            writer.writerow(
-                [
-                    session.session_id,
-                    session.mode,
-                    len(session.raw),
-                    session.sample_rate_hz,
-                    session.gap_count,
-                    session.missing_sample_count,
-                    f"{session.hardware_flag_percentage:.3f}",
-                    sum(1 for m in session.markers if m.event_type == "go"),
-                    sum(1 for w in windows if w.session_id == session.session_id),
-                ]
-            )
-    print(f"class window counts: {dict(counts)}")
-
-
-def _write_segmentation_quality(windows, out_path: Path) -> None:
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                "window_id",
-                "session_id",
-                "label",
-                "cue_sample_id",
-                "initial_onset_sample_id",
-                "onset_sample_id",
-                "window_end_offset_samples",
-                "perform_window_overrun_samples",
-                "energy_fraction_initial",
-                "energy_fraction_final",
-                "reanchored",
-                "reanchor_reason",
-            ]
-        )
-        for w in windows:
-            writer.writerow(
-                [
-                    w.window_id,
-                    w.session_id,
-                    w.label,
-                    w.cue_sample_id,
-                    w.initial_onset_sample_id,
-                    w.onset_sample_id,
-                    w.cue_to_window_end_samples,
-                    w.perform_window_overrun_samples,
-                    w.energy_fraction_initial,
-                    w.energy_fraction_final,
-                    w.reanchored,
-                    w.reanchor_reason,
-                ]
-            )
-
-
-def _drop_invalid_windows(windows):
-    dropped = [w for w in windows if w.perform_window_overrun_samples > 0]
-    kept = [w for w in windows if w.perform_window_overrun_samples <= 0]
-    if dropped:
-        print("dropping invalid overrun windows:")
-        for w in dropped:
-            print(
-                f"  {w.window_id} onset_offset={w.onset_sample_id - w.cue_sample_id} "
-                f"window_end_offset={w.cue_to_window_end_samples} "
-                f"overrun={w.perform_window_overrun_samples}"
-            )
-    return kept, dropped
-
-
-def _drop_excluded_sessions(sessions, windows):
-    kept_sessions = [s for s in sessions if s.session_id not in EXCLUDED_SESSIONS]
-    kept_windows = [w for w in windows if w.session_id not in EXCLUDED_SESSIONS]
-    return kept_sessions, kept_windows
-
-
-def _prediction_metrics(y_true, y_pred) -> dict:
-    y_true = np.asarray(y_true, dtype=np.int64)
-    y_pred = np.asarray(y_pred, dtype=np.int64)
-    macro_f1, macro_f1_all, precision, recall, f1, support = macro_f1_present_classes(
-        y_true,
-        y_pred,
-        labels=list(range(len(CLASS_NAMES))),
-    )
-    pred_counts = np.bincount(y_pred, minlength=len(CLASS_NAMES)) if len(y_pred) else np.zeros(len(CLASS_NAMES), dtype=np.int64)
-    null_mask = y_true == NULL_CLASS_ID
-    null_windows = int(np.count_nonzero(null_mask))
-    null_fp = int(np.count_nonzero(null_mask & (y_pred != NULL_CLASS_ID)))
-    null_fpr = float(null_fp / null_windows) if null_windows else float("nan")
-    null_hours = (null_windows * NULL_STEP_SAMPLES / 120.0) / 3600.0
-    null_fp_per_hour = float(null_fp / null_hours) if null_hours > 0 else float("nan")
-
-    row = {
-        "macro_f1": macro_f1,
-        "macro_f1_all_classes": macro_f1_all,
-        "null_windows": null_windows,
-        "null_effective_independent_windows": null_windows * NULL_STEP_SAMPLES / WINDOW_SAMPLES,
-        "null_false_positives": null_fp,
-        "null_fpr": null_fpr,
-        "null_fp_per_hour": null_fp_per_hour,
-    }
-    for idx, name in enumerate(CLASS_NAMES):
-        row[f"{name}_precision"] = float(precision[idx])
-        row[f"{name}_recall"] = float(recall[idx])
-        row[f"{name}_f1"] = float(f1[idx])
-        row[f"{name}_support"] = int(support[idx])
-        row[f"{name}_predicted"] = int(pred_counts[idx])
-    return row
-
-
-def _record_predictions(
-    rows: list[dict],
-    y_true,
-    y_pred,
-    method: str,
-    rate_hz: int,
-    split_type: str,
-    fold_id: str,
-    out_dir: Path,
-) -> None:
-    prediction_report(
-        y_true,
-        y_pred,
-        method,
-        rate_hz,
-        fold_id,
-        out_dir,
-        fail_on_collapse=False,
-    )
-    row = {
-        "method": method,
-        "rate_hz": rate_hz,
-        "split_type": split_type,
-        "fold_id": fold_id,
-    }
-    row.update(_prediction_metrics(y_true, y_pred))
-    rows.append(row)
-
-
-def _aggregate_rows(rows: list[dict], split_type: str = "cross_session_loso") -> list[dict]:
-    groups: dict[tuple[str, int, str], list[dict]] = defaultdict(list)
-    for row in rows:
-        if row["split_type"] == split_type:
-            groups[(row["method"], int(row["rate_hz"]), row["split_type"])].append(row)
-
-    aggregate = []
-    metric_keys = [
-        "macro_f1",
-        "macro_f1_all_classes",
-        "null_fpr",
-        "null_fp_per_hour",
-        "null_effective_independent_windows",
-    ]
-    for name in CLASS_NAMES:
-        metric_keys.extend([f"{name}_f1", f"{name}_recall"])
-
-    for (method, rate_hz, group_split), group in sorted(groups.items()):
-        out = {
-            "method": method,
-            "rate_hz": rate_hz,
-            "split_type": group_split,
-            "folds": len(group),
-        }
-        for key in metric_keys:
-            values = np.array([float(row[key]) for row in group], dtype=np.float64)
-            values = values[np.isfinite(values)]
-            out[f"{key}_mean"] = float(np.mean(values)) if len(values) else float("nan")
-            out[f"{key}_std"] = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
-        out["null_windows_total"] = int(sum(int(row["null_windows"]) for row in group))
-        out["null_false_positives_total"] = int(sum(int(row["null_false_positives"]) for row in group))
-        aggregate.append(out)
-    return aggregate
-
-
-def _write_rows(rows: list[dict], out_path: Path) -> None:
+def _write_csv(rows: list[dict], path: Path) -> None:
     if not rows:
         return
-    keys = []
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fields: list[str] = []
     for row in rows:
         for key in row:
-            if key not in keys:
-                keys.append(key)
-    with out_path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=keys)
+            if key not in fields:
+                fields.append(key)
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
 
 
-def _fmt_mean_std(row: dict, key: str, digits: int = 4) -> str:
-    return f"{row[f'{key}_mean']:.{digits}f} +/- {row[f'{key}_std']:.{digits}f}"
+def _session_report(sessions, windows, path: Path) -> None:
+    rows = []
+    for session in sessions:
+        session_windows = [window for window in windows if window.session_id == session.session_id]
+        guided = [window for window in session_windows if window.source == "guided"]
+        rows.append({
+            "session_id": session.session_id,
+            "participant_id": session.participant_id,
+            "data_role": session.data_role,
+            "usage": session.usage,
+            "guided_protocol": session.guided_protocol,
+            "samples": len(session.raw),
+            "recorded_minutes": len(session.raw) / session.sample_rate_hz / 60.0,
+            "sample_rate_hz": session.sample_rate_hz,
+            "gap_count": session.gap_count,
+            "missing_samples": session.missing_sample_count,
+            "hardware_pct": session.hardware_flag_percentage,
+            "go_markers": sum(marker.event_type == "go" for marker in session.markers),
+            "valid_windows": len(session_windows),
+            "reanchor_pct": (
+                100.0 * sum(window.reanchored for window in guided) / len(guided)
+                if guided else ""
+            ),
+        })
+    _write_csv(rows, path)
 
 
-def _write_summary(rows: list[dict], out_path: Path) -> None:
-    with out_path.open("w") as f:
-        f.write("# ML Summary\n\n")
-        f.write("Primary metric: cross-session LOSO mean +/- sample std across gesture-session folds. ")
-        f.write("The left-hand session `20260706_002` is excluded from all model splits.\n\n")
-        f.write("| method | rate_hz | split_type | folds | macro-F1 | null FPR | null FP/hr | gesture recall mean |\n")
-        f.write("|---|---:|---|---:|---:|---:|---:|---:|\n")
-        for row in rows:
-            gesture_recalls = [
-                row[f"{name}_recall_mean"]
-                for name in CLASS_NAMES
-                if name != "null"
-            ]
-            gesture_recall = float(np.mean(gesture_recalls)) if gesture_recalls else float("nan")
-            f.write(
-                f"| {row['method']} | {row['rate_hz']} | {row['split_type']} | {row['folds']} | "
-                f"{_fmt_mean_std(row, 'macro_f1')} | {_fmt_mean_std(row, 'null_fpr')} | "
-                f"{_fmt_mean_std(row, 'null_fp_per_hour', digits=2)} | {gesture_recall:.4f} |\n"
+def _window_metrics(y_true, y_pred) -> dict:
+    y_true = np.asarray(y_true, dtype=np.int64)
+    y_pred = np.asarray(y_pred, dtype=np.int64)
+    macro, macro_all, precision, recall, f1, support = macro_f1_present_classes(
+        y_true, y_pred, labels=list(range(len(CLASS_NAMES)))
+    )
+    gesture_present = (support > 0) & (np.arange(len(CLASS_NAMES)) != NULL_CLASS_ID)
+    gesture_macro = float(np.mean(f1[gesture_present])) if np.any(gesture_present) else float("nan")
+    row = {
+        "macro_f1_present": macro,
+        "macro_f1_all_classes": macro_all,
+        "gesture_macro_f1": gesture_macro,
+        "accuracy": float(np.mean(y_true == y_pred)) if len(y_true) else float("nan"),
+    }
+    for index, name in enumerate(CLASS_NAMES):
+        row[f"{name}_precision"] = float(precision[index])
+        row[f"{name}_recall"] = float(recall[index])
+        row[f"{name}_f1"] = float(f1[index])
+        row[f"{name}_support"] = int(support[index])
+    return row
+
+
+def _prediction_rows(windows, predictions, method: str, fold_id: str, stream_kind: str):
+    return [
+        {
+            "method": method,
+            "fold_id": fold_id,
+            "stream_kind": stream_kind,
+            "session_id": window.session_id,
+            "window_id": window.window_id,
+            "start_sample_id": window.start_sample_id,
+            "end_sample_id": window.end_sample_id,
+            "predicted_class_id": int(prediction),
+            "predicted_class": CLASS_NAMES[int(prediction)],
+        }
+        for window, prediction in zip(windows, predictions)
+    ]
+
+
+def _evaluate_events(
+    method: str,
+    fold_id: str,
+    windows,
+    predictions,
+    references,
+    stream_kind: str,
+    hop_samples: int,
+    exposure_hours: float | None = None,
+) -> tuple[list[dict], list[dict]]:
+    metric_rows = []
+    match_rows = []
+    for consecutive in (1, 2):
+        events = confirm_consecutive_predictions(
+            windows,
+            predictions,
+            consecutive=consecutive,
+            refractory_samples=120,
+        )
+        row = {
+            "method": method,
+            "fold_id": fold_id,
+            "stream_kind": stream_kind,
+            "hop_samples": hop_samples,
+            "consecutive_windows": consecutive,
+            "activation_events": len(events),
+        }
+        if references:
+            metrics, matches = match_events_to_gestures(
+                events,
+                references,
+                grace_samples=hop_samples,
             )
-        f.write("\nNull-only test windows use 50% overlap: report `null_effective_independent_windows_*` ")
-        f.write("in `summary.csv` as the approximate independent null count.\n")
+            row.update(metrics)
+            for match in matches:
+                match.update({
+                    "method": method,
+                    "fold_id": fold_id,
+                    "stream_kind": stream_kind,
+                    "consecutive_windows": consecutive,
+                })
+            match_rows.extend(matches)
+        if exposure_hours is not None:
+            row["exposure_hours"] = exposure_hours
+            row["false_activations_per_hour"] = (
+                len(events) / exposure_hours if exposure_hours > 0 else float("nan")
+            )
+        metric_rows.append(row)
+    return metric_rows, match_rows
 
 
-def _git_hash() -> str:
-    try:
-        return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True, stderr=subprocess.DEVNULL).strip()
-    except Exception:
-        return "nogit"
+def _predict_tree(classifier, windows):
+    from train_mlc.features import featurize
+
+    x, y, _ = featurize(windows)
+    return y, classifier.predict(x)
+
+
+def _predict_cnn_model(model_path: Path, stats_path: Path, windows):
+    import tensorflow as tf
+    from train_cnn.train import _arrays
+
+    stats = np.load(stats_path)
+    x, y = _arrays(windows, stats["mean"], stats["std"])
+    model = tf.keras.models.load_model(model_path)
+    probabilities = model.predict(x, verbose=0)
+    return y, np.argmax(probabilities, axis=1)
+
+
+def _st_tree_path(directory: Path | None, fold_id: str) -> Path | None:
+    if directory is None:
+        return None
+    for name in (f"{fold_id}.txt", f"ST_decision_tree_{fold_id}.txt"):
+        candidate = directory / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _aggregate(rows: list[dict], key: str = "gesture_macro_f1") -> list[dict]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        grouped[row["method"]].append(row)
+    output = []
+    for method, group in sorted(grouped.items()):
+        values = np.array([row[key] for row in group], dtype=np.float64)
+        output.append({
+            "method": method,
+            "folds": len(group),
+            f"{key}_mean": float(np.nanmean(values)),
+            f"{key}_sample_std": float(np.nanstd(values, ddof=1)) if len(values) > 1 else 0.0,
+        })
+    return output
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default="data")
-    parser.add_argument("--splits", default="ml/splits.json")
-    parser.add_argument("--results-dir", default="ml/results")
+    parser.add_argument("--manifest", default="ml/dataset_manifest.csv")
+    parser.add_argument("--splits", default="ml/splits_within_user.json")
+    parser.add_argument("--results-dir", default="ml/results/current")
+    parser.add_argument("--rebuild-splits", action="store_true")
     parser.add_argument("--skip-cnn", action="store_true")
-    parser.add_argument("--drop-invalid-windows", action="store_true")
-    parser.add_argument("--use-existing-splits", action="store_true")
-    parser.add_argument("--st-tree", default=None, help="Optional MEMS Studio ST_decision_tree_*.txt fixed tree to evaluate")
-    parser.add_argument("--st-tree-gyro-lsb-scale", type=float, default=MEMS_STUDIO_GYRO_INTERNAL_PER_LSB)
+    parser.add_argument("--skip-hdc", action="store_true")
+    parser.add_argument("--skip-mlc-proxy", action="store_true")
+    parser.add_argument("--st-tree-dir", type=Path, default=None)
     args = parser.parse_args()
 
     results = Path(args.results_dir)
     results.mkdir(parents=True, exist_ok=True)
-    sessions = load_sessions(args.data_dir)
-    windows = segment_sessions(sessions, enforce_perform_window=not args.drop_invalid_windows)
-    _write_segmentation_quality(windows, results / "segmentation_quality.csv")
-    if args.drop_invalid_windows:
-        windows, _dropped = _drop_invalid_windows(windows)
-    sessions, windows = _drop_excluded_sessions(sessions, windows)
+    sessions, manifest_warnings = apply_manifest(load_sessions(args.data_dir), args.manifest)
+    for warning in manifest_warnings:
+        print(f"warning: {warning}")
+    all_windows = segment_sessions(sessions, enforce_perform_window=False)
+    dropped = [window for window in all_windows if window.perform_window_overrun_samples > 0]
+    windows = [window for window in all_windows if window.perform_window_overrun_samples <= 0]
+    if dropped:
+        print(f"dropped {len(dropped)} guided windows exceeding the perform interval")
     _session_report(sessions, windows, results / "session_report.csv")
     splits = build_or_load_splits(
         windows,
         args.splits,
         seed=SEED,
-        force_rebuild=not args.use_existing_splits,
+        force_rebuild=args.rebuild_splits,
     )
     assert_no_cross_session_leakage(splits)
     (results / "split_summary.json").write_text(json.dumps(splits, indent=2) + "\n")
 
-    folds = splits.get("cross_session_loso") or [splits["cross_session"]]
-    if not folds or not folds[0]["test"]:
-        raise ValueError(
-            "No held-out cross-session test split exists. Collect at least two sessions, "
-            "or run `PYTHONPATH=ml python3 ml/make_synthetic.py` and then use "
-            "`--data-dir ml/synthetic_data` for a plumbing test."
-        )
+    sessions_by_id = {session.session_id: session for session in sessions}
+    window_rows: list[dict] = []
+    event_rows: list[dict] = []
+    event_match_rows: list[dict] = []
+    chronological_prediction_rows: list[dict] = []
 
-    fold_rows: list[dict] = []
-    diagnostic_rows: list[dict] = []
-    from train_mlc.tree import train_tree
+    for fold in splits["within_user_session_folds"]:
+        fold_id = fold["fold_id"]
+        fold_dir = results / "folds" / fold_id
+        fold_dir.mkdir(parents=True, exist_ok=True)
+        fold_wrapper = {"cross_session": fold}
+        test_aligned = select_windows(windows, fold["test"])
+        val_aligned = select_windows(windows, fold["val"])
+        test_sessions = [sessions_by_id[session_id] for session_id in fold["test_gesture_sessions"]]
+        stream_sets = [("guided_test", test_sessions, test_aligned)]
+        for usage, stream_kind in (("development", "free_living_development"), ("final_test", "free_living_final_test")):
+            null_sessions = [
+                session for session in sessions
+                if session.data_role == "free_living_null" and session.usage == usage
+            ]
+            if null_sessions:
+                stream_sets.append((stream_kind, null_sessions, []))
 
-    fold_dir = results / "folds"
-    for fold in folds:
-        fold_id = fold.get("fold_id", "cross_session")
-        fold_splits = {"cross_session": fold}
+        # MEMS Studio feature windows advance by one complete feature window;
+        # the MCU classifiers use the deployed 50% overlap.  Event metrics must
+        # preserve those actual cadences or M=2 latency/FP comparisons are false.
+        predictors: list[tuple[str, object, int]] = []
+        if not args.skip_mlc_proxy:
+            from train_mlc.tree import train_tree
 
-        clf, names, y_test, pred = train_tree(windows, fold_splits)
-        _record_predictions(
-            fold_rows,
-            y_test,
-            pred,
-            "mlc_tree",
-            120,
-            "cross_session_loso",
-            fold_id,
-            fold_dir,
-        )
+            classifier, _, y_true, prediction = train_tree(windows, fold_wrapper)
+            predictors.append(("mlc_proxy_tree", lambda target, c=classifier: _predict_tree(c, target), 128))
+            row = {"method": "mlc_proxy_tree", "fold_id": fold_id, **_window_metrics(y_true, prediction)}
+            window_rows.append(row)
+            prediction_report(y_true, prediction, "mlc_proxy_tree", 120, fold_id, fold_dir, fail_on_collapse=False)
 
-        if args.st_tree:
+        st_path = _st_tree_path(args.st_tree_dir, fold_id)
+        if st_path is not None:
             from train_mlc.st_tree import MLCTreeClassifier
 
-            st_test_w = select_windows(windows, fold["test"])
-            for precision in ("fp16", "fp64"):
-                st_clf = MLCTreeClassifier.from_file(
-                    args.st_tree,
-                    precision=precision,
-                    gyro_lsb_scale=args.st_tree_gyro_lsb_scale,
-                )
-                y_true, y_pred = st_clf.predict_windows(st_test_w)
-                _record_predictions(
-                    fold_rows,
-                    y_true,
-                    y_pred,
-                    f"st_mlc_fixed_{precision}",
-                    120,
-                    "cross_session_loso",
-                    fold_id,
-                    fold_dir,
-                )
+            classifier = MLCTreeClassifier.from_file(st_path, precision="fp16")
+            y_true, prediction = classifier.predict_windows(test_aligned)
+            predictors.append(("mlc_sensor_tree", lambda target, c=classifier: c.predict_windows(target), 128))
+            window_rows.append({
+                "method": "mlc_sensor_tree",
+                "fold_id": fold_id,
+                "tree_path": str(st_path),
+                **_window_metrics(y_true, prediction),
+            })
+            prediction_report(y_true, prediction, "mlc_sensor_tree", 120, fold_id, fold_dir, fail_on_collapse=False)
 
-        from train_hdc.encode import fit_level_bounds, make_codebooks
-        from train_hdc.train import DEFAULT_ENCODING_MODE, HDC_EXPORT_CODEBOOK_FACTOR, predict_hdc, train_hdc
+        if not args.skip_hdc:
+            from train_hdc.encode import fit_level_bounds, make_codebooks
+            from train_hdc.train import (
+                SEED as HDC_SEED,
+                fit_rejection_thresholds,
+                predict_hdc_with_rejection,
+                train_hdc,
+            )
 
-        for rate in (120, 60, 30):
-            rate_windows = windows if rate == 120 else resample_windows(windows, rate)
-            train_w = select_windows(rate_windows, fold["train"])
-            test_w = select_windows(rate_windows, fold["test"])
-            lo, hi = fit_level_bounds(train_w)
-            for dim in (1024, 2048, 4096):
-                codebooks = make_codebooks(dim=dim, seed=SEED, level_min=lo, level_max=hi)
-                memories = train_hdc(train_w, codebooks, mode=DEFAULT_ENCODING_MODE)
-                y_true, y_pred = predict_hdc(test_w, memories, codebooks, mode=DEFAULT_ENCODING_MODE)
-                _record_predictions(
-                    fold_rows,
-                    y_true,
-                    y_pred,
-                    f"hdc_D{dim}",
-                    rate,
-                    "cross_session_loso",
-                    fold_id,
-                    fold_dir,
-                )
+            train_windows = select_windows(windows, fold["train"])
+            lo, hi = fit_level_bounds(train_windows)
+            codebooks = make_codebooks(dim=2048, seed=HDC_SEED, level_min=lo, level_max=hi)
+            memories = train_hdc(train_windows, codebooks)
+            thresholds = fit_rejection_thresholds(val_aligned, memories, codebooks)
+
+            def hdc_predict(target, m=memories, c=codebooks, t=thresholds):
+                y, prediction, _ = predict_hdc_with_rejection(target, m, c, t)
+                return y, prediction
+
+            predictors.append(("hdc_D2048_reject", hdc_predict, 64))
+            y_true, prediction = hdc_predict(test_aligned)
+            window_rows.append({
+                "method": "hdc_D2048_reject",
+                "fold_id": fold_id,
+                "max_distance_fraction": thresholds.max_distance_fraction,
+                "min_margin_fraction": thresholds.min_margin_fraction,
+                "validation_macro_f1": thresholds.validation_macro_f1,
+                **_window_metrics(y_true, prediction),
+            })
+            prediction_report(y_true, prediction, "hdc_D2048_reject", 120, fold_id, fold_dir, fail_on_collapse=False)
 
         if not args.skip_cnn:
-            try:
-                from train_cnn.train import train_one_rate
+            from train_cnn.train import train_one_rate
 
-                cnn_dir = results / "cnn" / fold_id
-                for rate in (120, 60, 30):
-                    row = train_one_rate(
-                        windows,
-                        fold_splits,
-                        rate,
-                        cnn_dir,
-                        return_predictions=True,
-                        report_split_type=fold_id,
-                    )
-                    _record_predictions(
-                        fold_rows,
-                        row["_y_true"],
-                        row["_y_pred"],
-                        "cnn_float",
-                        rate,
-                        "cross_session_loso",
-                        fold_id,
-                        fold_dir,
-                    )
-            except ImportError as exc:
-                print(f"skipping CNN because TensorFlow is not importable: {exc}")
+            cnn_dir = fold_dir / "cnn"
+            cnn_result = train_one_rate(
+                windows,
+                fold_wrapper,
+                120,
+                cnn_dir,
+                return_predictions=True,
+                report_split_type=fold_id,
+            )
+            model_path = Path(cnn_result["model"])
+            stats_path = cnn_dir / "cnn_120hz_standardizer.npz"
+            predictors.append((
+                "cnn_float",
+                lambda target, model=model_path, stats=stats_path: _predict_cnn_model(model, stats, target),
+                64,
+            ))
+            window_rows.append({
+                "method": "cnn_float",
+                "fold_id": fold_id,
+                **_window_metrics(cnn_result["_y_true"], cnn_result["_y_pred"]),
+            })
 
-    # Within-session is a ceiling/upper-bound diagnostic. It is not the headline result.
-    within_wrapper = {"within_session": splits["within_session"]}
-    try:
-        clf, names, y_test, pred = train_tree(windows, within_wrapper, split_type="within_session")
-        within_report = prediction_report(
-            y_test,
-            pred,
-            "mlc_tree",
-            120,
-            "within_session_ceiling",
-            results / "within_session_ceiling",
-            fail_on_collapse=False,
-        )
-        diagnostic = {
-            "method": "mlc_tree",
-            "rate_hz": 120,
-            "split_type": "within_session_ceiling",
-            "note": "upper_bound_diagnostic_only",
-        }
-        diagnostic.update(_prediction_metrics(y_test, pred))
-        diagnostic_rows.append(diagnostic)
-    except Exception as exc:
-        print(f"within-session diagnostic skipped: {exc}")
+        for method, predictor, hop_samples in predictors:
+            for stream_kind, exposure_sessions, references in stream_sets:
+                stream = stream_windows(exposure_sessions, hop_samples=hop_samples)
+                _, prediction = predictor(stream)
+                chronological_prediction_rows.extend(
+                    _prediction_rows(stream, prediction, method, fold_id, stream_kind)
+                )
+                exposure = None if references else recorded_hours(exposure_sessions)
+                metrics, matches = _evaluate_events(
+                    method,
+                    fold_id,
+                    stream,
+                    prediction,
+                    references,
+                    stream_kind,
+                    hop_samples,
+                    exposure,
+                )
+                event_rows.extend(metrics)
+                event_match_rows.extend(matches)
 
-    aggregate_rows = _aggregate_rows(fold_rows)
-    _write_rows(fold_rows, results / "fold_metrics.csv")
-    _write_rows(aggregate_rows, results / "summary.csv")
-    _write_rows(diagnostic_rows, results / "within_session_ceiling.csv")
-    _write_summary(aggregate_rows, results / "summary.md")
-    collapsed = [r for r in aggregate_rows if r.get("macro_f1_mean", 0.0) <= 0.0]
-    if collapsed:
-        msg = "; ".join(f"{r['method']}@{r['rate_hz']}Hz" for r in collapsed)
-        raise RuntimeError(f"Degenerate zero macro-F1 detected after writing reports: {msg}")
-    print(f"wrote LOSO results to {results}")
+    summary = _aggregate(window_rows)
+    _write_csv(window_rows, results / "fold_window_metrics.csv")
+    _write_csv(summary, results / "summary.csv")
+    _write_csv(event_rows, results / "event_metrics.csv")
+    _write_csv(event_match_rows, results / "event_matches.csv")
+    _write_csv(chronological_prediction_rows, results / "chronological_predictions.csv")
+    with (results / "summary.md").open("w") as f:
+        f.write("# Within-user cross-session summary\n\n")
+        f.write("| method | folds | gesture macro-F1 |\n|---|---:|---:|\n")
+        for row in summary:
+            f.write(
+                f"| {row['method']} | {row['folds']} | "
+                f"{row['gesture_macro_f1_mean']:.4f} +/- "
+                f"{row['gesture_macro_f1_sample_std']:.4f} |\n"
+            )
+        f.write("\nM=1 and M=2 activation metrics are in `event_metrics.csv`.\n")
+    print(f"wrote within-user results to {results}")
 
 
 if __name__ == "__main__":

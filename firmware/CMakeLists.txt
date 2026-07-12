@@ -20,6 +20,7 @@ set_source_files_properties(src/classifiers/clf_cnn.c PROPERTIES LANGUAGE CXX)
 
 target_sources(app PRIVATE
     src/main.c
+    src/benchmark.c
     src/ble/ble.c
     src/modules/imu.c
 )

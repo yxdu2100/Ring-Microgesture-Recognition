@@ -16,6 +16,7 @@ BUILD_ASSERT(HDC_DIM_WORDS == 64U, "HDC dimension must be 2048 bits");
 BUILD_ASSERT(HDC_DIM_BITS == 2048U, "HDC dimension must be 2048 bits");
 BUILD_ASSERT(HDC_CHANNEL_COUNT == CLF_CHANNELS, "HDC channel count mismatch");
 BUILD_ASSERT(HDC_CLASS_VECTOR_COUNT == CLF_CLASS_COUNT, "HDC class count mismatch");
+BUILD_ASSERT(CLF_CLASS_COUNT == 5U, "HDC rejection assumes four gestures plus null");
 
 static uint8_t timestep_counts[HDC_DIM_BITS];
 static uint16_t window_counts[HDC_DIM_BITS];
@@ -184,7 +185,10 @@ int clf_process_window(const int16_t (*win)[CLF_CHANNELS], uint16_t n)
 
 	build_query_vector(n - 2U);
 
-	for (uint8_t class_id = 0U; class_id < CLF_CLASS_COUNT; class_id++) {
+	/* Null is an open-set rejection decision. A single prototype cannot model
+	 * heterogeneous free-living activity reliably, so only gesture prototypes
+	 * compete in nearest-neighbor search. */
+	for (uint8_t class_id = 0U; class_id < (CLF_CLASS_COUNT - 1U); class_id++) {
 		uint16_t distance = hamming_distance_to_class(class_id);
 
 		if (distance < best_distance) {
@@ -197,6 +201,10 @@ int clf_process_window(const int16_t (*win)[CLF_CHANNELS], uint16_t n)
 	}
 
 	last_score = (int16_t)(second_distance - best_distance);
+	if (best_distance > HDC_REJECTION_MAX_DISTANCE ||
+	    (second_distance - best_distance) < HDC_REJECTION_MIN_MARGIN) {
+		return CLF_CLASS_COUNT - 1U;
+	}
 	return best_class;
 }
 

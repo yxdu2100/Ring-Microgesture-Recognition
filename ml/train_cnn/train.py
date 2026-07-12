@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from eval_utils import macro_f1_present_classes, prediction_report
-from ringdata import CLASS_NAMES, load_sessions, resample_windows, segment_sessions
+from ringdata import CLASS_NAMES, apply_manifest, load_sessions, resample_windows, segment_sessions
 from ringdata.convert import raw_to_physical
 from ringdata.splits import assert_no_cross_session_leakage, build_or_load_splits, select_windows
 from train_cnn.model import build_model
@@ -67,7 +67,16 @@ def augment_batch(x: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         out[i, :, 0:3] = out[i, :, 0:3] @ r.T
         out[i, :, 3:6] = out[i, :, 3:6] @ r.T
         shift = int(rng.integers(-12, 13))
-        out[i] = np.roll(out[i], shift, axis=0)
+        shifted = np.zeros_like(out[i])
+        if shift > 0:
+            shifted[shift:] = out[i, :-shift]
+            shifted[:shift] = out[i, :1]
+        elif shift < 0:
+            shifted[:shift] = out[i, -shift:]
+            shifted[shift:] = out[i, -1:]
+        else:
+            shifted = out[i]
+        out[i] = shifted
         sigma = 0.02 * np.std(out[i], axis=0, keepdims=True)
         out[i] += rng.normal(0.0, sigma, size=out[i].shape).astype(np.float32)
     return out
@@ -98,6 +107,10 @@ class MacroF1EarlyStopping:
                         if self.outer.weights is not None:
                             self.model.set_weights(self.outer.weights)
 
+            def on_train_end(self, logs=None):
+                if self.outer.weights is not None:
+                    self.model.set_weights(self.outer.weights)
+
         self.best = -1.0
         self.wait = 0
         self.weights = None
@@ -115,6 +128,29 @@ def _balanced_sample_weights(y: np.ndarray) -> np.ndarray:
     if np.any(present):
         weights[present] = float(np.sum(counts[present])) / (float(np.count_nonzero(present)) * counts[present])
     return weights[y].astype(np.float32)
+
+
+def _balanced_train_windows(windows, seed: int, max_per_class: int | None = None):
+    """Return a deterministic class- and session-shuffled calibration subset."""
+    by_class: dict[int, list] = {}
+    for window in windows:
+        by_class.setdefault(window.class_id, []).append(window)
+    if not by_class:
+        return []
+    target = min(len(group) for group in by_class.values())
+    if max_per_class is not None:
+        target = min(target, max_per_class)
+    rng = np.random.default_rng(seed)
+    selected = []
+    for class_id in sorted(by_class):
+        group = sorted(
+            by_class[class_id],
+            key=lambda window: (window.session_id, window.start_sample_id, window.window_id),
+        )
+        indices = rng.permutation(len(group))[:target]
+        selected.extend(group[int(index)] for index in indices)
+    rng.shuffle(selected)
+    return selected
 
 
 def _validation_from_train(train_w: list, seed: int) -> tuple[list, list]:
@@ -144,6 +180,7 @@ def train_one_rate(
 ) -> dict:
     import tensorflow as tf
 
+    _set_seeds()
     report_split_type = report_split_type or split_key
     rate_windows = windows if rate_hz == 120 else resample_windows(windows, rate_hz)
     split = splits[split_key]
@@ -171,12 +208,24 @@ def train_one_rate(
     model.compile(optimizer=tf.keras.optimizers.Adam(1e-3), loss="sparse_categorical_crossentropy")
 
     class AugmentSequence(tf.keras.utils.Sequence):
+        def __init__(self):
+            super().__init__()
+            self.indices = np.arange(len(x_train), dtype=np.int64)
+            rng.shuffle(self.indices)
+
         def __len__(self):
             return max(1, int(np.ceil(len(x_train) / 32)))
 
         def __getitem__(self, idx):
-            sl = slice(idx * 32, min(len(x_train), (idx + 1) * 32))
-            return augment_batch(x_train[sl], rng), y_train[sl], sample_weight[sl]
+            batch_indices = self.indices[idx * 32 : min(len(x_train), (idx + 1) * 32)]
+            return (
+                augment_batch(x_train[batch_indices], rng),
+                y_train[batch_indices],
+                sample_weight[batch_indices],
+            )
+
+        def on_epoch_end(self):
+            rng.shuffle(self.indices)
 
     stopper = MacroF1EarlyStopping(x_val, y_val, patience=20)
     model.fit(AugmentSequence(), epochs=200, verbose=0, callbacks=[stopper.callback])
@@ -212,14 +261,18 @@ def train_one_rate(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default="data")
-    parser.add_argument("--splits", default="ml/splits.json")
+    parser.add_argument("--manifest", default="ml/dataset_manifest.csv")
+    parser.add_argument("--splits", default="ml/splits_within_user.json")
     parser.add_argument("--out-dir", default="ml/results/cnn")
     args = parser.parse_args()
 
     _set_seeds()
-    sessions = load_sessions(args.data_dir)
-    windows = segment_sessions(sessions)
-    splits = build_or_load_splits(windows, args.splits, seed=SEED)
+    sessions, manifest_warnings = apply_manifest(load_sessions(args.data_dir), args.manifest)
+    for warning in manifest_warnings:
+        print(f"warning: {warning}")
+    windows = segment_sessions(sessions, enforce_perform_window=False)
+    windows = [window for window in windows if window.perform_window_overrun_samples <= 0]
+    splits = build_or_load_splits(windows, args.splits)
     assert_no_cross_session_leakage(splits)
     rows = []
     for rate in (120, 60, 30):

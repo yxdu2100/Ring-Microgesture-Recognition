@@ -37,6 +37,10 @@ class Window:
     baseline: float | None = None
     peak_energy: float | None = None
     source: str = "guided"
+    participant_id: str = "unknown"
+    data_role: str = "unknown"
+    guided_protocol: str = "normal"
+    usage: str = "auto"
 
 
 def _moving_average(x: np.ndarray, n: int) -> np.ndarray:
@@ -233,6 +237,10 @@ def segment_session(
                     start_sample_id=start_id,
                     end_sample_id=int(session.sample_ids[start + window_samples - 1]),
                     source="null",
+                    participant_id=session.participant_id,
+                    data_role=session.data_role,
+                    guided_protocol=session.guided_protocol,
+                    usage=session.usage,
                 )
             )
         return windows
@@ -344,6 +352,10 @@ def segment_session(
                 threshold=threshold,
                 baseline=baseline,
                 peak_energy=float(np.max(region)) if len(region) else None,
+                participant_id=session.participant_id,
+                data_role=session.data_role,
+                guided_protocol=session.guided_protocol,
+                usage=session.usage,
             )
         )
     return windows

@@ -49,6 +49,8 @@ class Session:
     missing_sample_count: int
     flag_counts: dict[str, int]
     hardware_flag_percentage: float
+    data_role: str = "unknown"
+    usage: str = "auto"
 
     @property
     def mode(self) -> str:
@@ -66,6 +68,15 @@ class Session:
             if dt > 0:
                 return int(round(1.0 / dt))
         return 120
+
+    @property
+    def participant_id(self) -> str:
+        return str(self.meta.get("participantID") or self.meta.get("subjectID") or "unknown")
+
+    @property
+    def guided_protocol(self) -> str:
+        notes = str(self.meta.get("notes", "")).lower()
+        return "fast" if "guided_fast_mode=true" in notes else "normal"
 
 
 def _read_markers(path: Path) -> list[Marker]:
@@ -91,7 +102,27 @@ def _flag_counts(flags: np.ndarray) -> dict[str, int]:
     return {name: int(np.count_nonzero((flags & bit) != 0)) for name, bit in FLAG_BITS.items()}
 
 
-def load_session(folder: str | Path, min_hardware_pct: float = 99.0) -> Session:
+def _infer_data_role(folder: Path, mode: str) -> str:
+    parts = {part.strip().lower().replace("_", "-") for part in folder.parts}
+    if "archive" in parts:
+        return "archive"
+    if "free-living null" in parts or "free-living-null" in parts:
+        return "free_living_null"
+    if "structured null" in parts or "structured-null" in parts:
+        return "structured_null"
+    if "gesture" in parts or mode == "guided":
+        return "gesture"
+    if mode == "null":
+        return "unspecified_null"
+    return "unknown"
+
+
+def load_session(
+    folder: str | Path,
+    min_hardware_pct: float = 99.0,
+    data_role: str | None = None,
+    usage: str = "auto",
+) -> Session:
     """Load and validate one RingCollector export folder."""
     folder = Path(folder)
     meta_path = folder / "meta.json"
@@ -155,6 +186,7 @@ def load_session(folder: str | Path, min_hardware_pct: float = 99.0) -> Session:
         )
 
     session_id = str(meta.get("sessionID") or folder.name)
+    role = data_role or _infer_data_role(folder, str(meta.get("mode", "guided")))
     return Session(
         session_id=session_id,
         folder=folder,
@@ -169,17 +201,28 @@ def load_session(folder: str | Path, min_hardware_pct: float = 99.0) -> Session:
         missing_sample_count=missing_sample_count,
         flag_counts=flags,
         hardware_flag_percentage=hardware_pct,
+        data_role=role,
+        usage=usage,
     )
 
 
 def load_sessions(data_dir: str | Path, min_hardware_pct: float = 99.0) -> list[Session]:
-    """Load every direct child session folder in a data directory."""
+    """Recursively load active RingCollector sessions below ``data_dir``.
+
+    Any path component named ``archive`` is excluded. Dataset roles are inferred
+    from the current Gesture/Null directory layout and can later be overridden by
+    the study manifest.
+    """
     data_dir = Path(data_dir)
     folders: Iterable[Path]
     if (data_dir / "imu.csv").exists():
         folders = [data_dir]
     else:
-        folders = sorted(p for p in data_dir.iterdir() if p.is_dir() and (p / "imu.csv").exists())
+        folders = sorted(
+            p.parent
+            for p in data_dir.rglob("imu.csv")
+            if "archive" not in {part.lower() for part in p.parts}
+        )
     sessions = [load_session(p, min_hardware_pct=min_hardware_pct) for p in folders]
     if not sessions:
         raise ValueError(f"{data_dir}: no RingCollector session folders found")

@@ -7,12 +7,14 @@
 #include <zephyr/sys/util.h>
 
 #include "ble/ble.h"
+#include "benchmark.h"
 #include "classifiers/classifier.h"
 #include "modules/imu.h"
 
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
-#define CONTROL_EVENTS (EVENT_START_STREAMING | EVENT_ENTER_LOW_POWER)
+#define EVENT_CLASSIFIER_SAMPLES BIT(2)
+#define CONTROL_EVENTS (EVENT_START_STREAMING | EVENT_ENTER_LOW_POWER | EVENT_CLASSIFIER_SAMPLES)
 
 #if !defined(CONFIG_CLASSIFIER_NONE) && !defined(CONFIG_CLASSIFIER_MLC)
 #define CLASSIFIER_HOP_SAMPLES 64U
@@ -77,6 +79,9 @@ static void classifier_sample_callback(const struct bt_app_imu_sample *samples,
 			}
 		}
 	}
+	if (sample_count > 0U) {
+		k_event_post(&sys_events, EVENT_CLASSIFIER_SAMPLES);
+	}
 }
 
 static void classifier_copy_window(void)
@@ -116,7 +121,9 @@ static void classifier_process_sample(const struct bt_app_imu_sample *sample)
 
 	hop_count = 0U;
 	classifier_copy_window();
+	uint32_t cycle_start = k_cycle_get_32();
 	decision = clf_process_window(classifier_window, CLF_WINDOW_SAMPLES);
+	classifier_benchmark_record(k_cycle_get_32() - cycle_start);
 
 	if (decision >= 0 && decision < CLF_CLASS_COUNT) {
 		bt_app_send_classification(IS_ENABLED(CONFIG_CLASSIFIER_CNN) ?
@@ -170,9 +177,11 @@ int main(void)
 {
 	int ret;
 
-	ret = ble_init();
-	if (ret != 0) {
-		return ret;
+	if (!IS_ENABLED(CONFIG_CLASSIFIER_BENCHMARK_MODE)) {
+		ret = ble_init();
+		if (ret != 0) {
+			return ret;
+		}
 	}
 
 	ret = imu_init();
@@ -185,23 +194,37 @@ int main(void)
 		LOG_WRN("Classifier %s init returned %d", clf_name(), ret);
 	}
 
-#if !defined(CONFIG_CLASSIFIER_NONE) && !defined(CONFIG_CLASSIFIER_MLC)
-	imu_set_sample_callback(classifier_sample_callback);
-#endif
+	#if !defined(CONFIG_CLASSIFIER_NONE) && !defined(CONFIG_CLASSIFIER_MLC)
+		imu_set_sample_callback(classifier_sample_callback);
+	#endif
+
+	if (IS_ENABLED(CONFIG_CLASSIFIER_BENCHMARK_MODE)) {
+		classifier_reset();
+		ret = imu_start_streaming();
+		if (ret != 0) {
+			return ret;
+		}
+	}
 
 	LOG_INF("Firmware ready: classifier=%s", clf_name());
 
 	int64_t main_heartbeat_last_ms = k_uptime_get();
 
 	while (1) {
-		uint32_t events = k_event_wait(&sys_events, CONTROL_EVENTS, false, K_NO_WAIT);
+		uint32_t events = k_event_wait(
+			&sys_events,
+			CONTROL_EVENTS,
+			false,
+			IS_ENABLED(CONFIG_CLASSIFIER_BENCHMARK_MODE) ? K_FOREVER : K_NO_WAIT);
 
 		if (events != 0U) {
 			k_event_clear(&sys_events, events);
 			handle_control_events(events);
 		}
 
-		(void)bt_app_stream_should_continue();
+		if (!IS_ENABLED(CONFIG_CLASSIFIER_BENCHMARK_MODE)) {
+			(void)bt_app_stream_should_continue();
+		}
 
 		int64_t now_ms = k_uptime_get();
 
@@ -214,6 +237,8 @@ int main(void)
 #if !defined(CONFIG_CLASSIFIER_NONE) && !defined(CONFIG_CLASSIFIER_MLC)
 		classifier_drain_samples();
 #endif
-		k_msleep(20);
+		if (!IS_ENABLED(CONFIG_CLASSIFIER_BENCHMARK_MODE)) {
+			k_msleep(20);
+		}
 	}
 }

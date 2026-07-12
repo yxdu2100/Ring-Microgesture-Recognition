@@ -11,7 +11,7 @@ import numpy as np
 from sklearn.tree import DecisionTreeClassifier, _tree
 
 from eval_utils import prediction_report
-from ringdata import CLASS_NAMES, load_sessions, segment_sessions
+from ringdata import CLASS_NAMES, apply_manifest, load_sessions, segment_sessions
 from ringdata.splits import assert_no_cross_session_leakage, build_or_load_splits, select_windows
 from train_mlc.features import featurize
 
@@ -126,15 +126,19 @@ def _write_metrics(results_dir: Path, report: dict, split_type: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default="data")
-    parser.add_argument("--splits", default="ml/splits.json")
+    parser.add_argument("--manifest", default="ml/dataset_manifest.csv")
+    parser.add_argument("--splits", default="ml/splits_within_user.json")
     parser.add_argument("--results-dir", default="ml/results")
     parser.add_argument("--header", default="firmware/src/classifiers/generated/tree_sw.h")
-    parser.add_argument("--split-type", default="cross_session", choices=["cross_session", "within_session"])
+    parser.add_argument("--split-type", default="cross_session", choices=["cross_session"])
     args = parser.parse_args()
 
-    sessions = load_sessions(args.data_dir)
-    windows = segment_sessions(sessions)
-    splits = build_or_load_splits(windows, args.splits, seed=SEED)
+    sessions, warnings = apply_manifest(load_sessions(args.data_dir), args.manifest)
+    for warning in warnings:
+        print(f"warning: {warning}")
+    windows = segment_sessions(sessions, enforce_perform_window=False)
+    windows = [window for window in windows if window.perform_window_overrun_samples <= 0]
+    splits = build_or_load_splits(windows, args.splits)
     assert_no_cross_session_leakage(splits)
     clf, names, y_test, pred = train_tree(windows, splits, split_type=args.split_type)
     report = prediction_report(y_test, pred, "mlc_tree", 120, args.split_type, args.results_dir)

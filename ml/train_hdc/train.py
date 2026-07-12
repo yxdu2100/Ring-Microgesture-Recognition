@@ -4,17 +4,26 @@ from __future__ import annotations
 
 import argparse
 import csv
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-from eval_utils import prediction_report
-from ringdata import CLASS_NAMES, load_sessions, resample_windows, segment_sessions
+from eval_utils import macro_f1_present_classes, prediction_report
+from ringdata import CLASS_NAMES, apply_manifest, load_sessions, resample_windows, segment_sessions
 from ringdata.splits import assert_no_cross_session_leakage, build_or_load_splits, select_windows
 from train_hdc.encode import Codebooks, encode_window, fit_level_bounds, hamming, make_codebooks
 
 SEED = 20260706
 DEFAULT_ENCODING_MODE = "ngram"
+NULL_CLASS_ID = CLASS_NAMES.index("null")
+
+
+@dataclass(frozen=True)
+class RejectionThresholds:
+    max_distance_fraction: float
+    min_margin_fraction: float
+    validation_macro_f1: float
 
 
 def _signed(bits: np.ndarray) -> np.ndarray:
@@ -52,9 +61,12 @@ def train_hdc(train_w, codebooks: Codebooks, epochs: int = 5, mode: str = DEFAUL
         labels.append(window.class_id)
         memories[window.class_id] += _signed(q)
 
+    rng = np.random.default_rng(SEED + codebooks.dim + 17)
     for _ in range(epochs):
         class_bits = _class_bits(memories, codebooks)
-        for q, y in zip(encoded, labels):
+        for index in rng.permutation(len(encoded)):
+            q = encoded[int(index)]
+            y = labels[int(index)]
             pred = int(np.argmin(hamming(q, class_bits)))
             if pred != y:
                 s = _signed(q)
@@ -73,6 +85,90 @@ def predict_hdc(windows, memories: np.ndarray, codebooks: Codebooks, mode: str =
         y_true.append(window.class_id)
         y_pred.append(int(np.argmin(hamming(q, class_bits))))
     return np.array(y_true, dtype=np.int64), np.array(y_pred, dtype=np.int64)
+
+
+def hdc_distance_features(windows, memories: np.ndarray, codebooks: Codebooks, mode: str = DEFAULT_ENCODING_MODE):
+    """Return four-gesture nearest-prototype distances and confidence margins."""
+    class_bits = _class_bits(memories, codebooks)[:NULL_CLASS_ID]
+    y_true = []
+    candidates = []
+    best_fraction = []
+    margin_fraction = []
+    all_distances = []
+    for window in windows:
+        query = encode_window(window.raw, codebooks, mode=mode)
+        distances = hamming(query, class_bits).astype(np.float32)
+        order = np.argsort(distances)
+        best = int(order[0])
+        second = float(distances[order[1]]) if len(order) > 1 else float(codebooks.dim)
+        y_true.append(window.class_id)
+        candidates.append(best)
+        best_fraction.append(float(distances[best] / codebooks.dim))
+        margin_fraction.append(float((second - distances[best]) / codebooks.dim))
+        all_distances.append(distances)
+    return (
+        np.asarray(y_true, dtype=np.int64),
+        np.asarray(candidates, dtype=np.int64),
+        np.asarray(best_fraction, dtype=np.float32),
+        np.asarray(margin_fraction, dtype=np.float32),
+        np.asarray(all_distances, dtype=np.float32),
+    )
+
+
+def fit_rejection_thresholds(
+    validation_windows,
+    memories: np.ndarray,
+    codebooks: Codebooks,
+    mode: str = DEFAULT_ENCODING_MODE,
+) -> RejectionThresholds:
+    """Fit gesture-to-null rejection using validation data only."""
+    y_true, candidates, best, margin, _ = hdc_distance_features(
+        validation_windows, memories, codebooks, mode=mode
+    )
+    if len(y_true) == 0 or not np.any(y_true == NULL_CLASS_ID):
+        raise ValueError("HDC rejection requires validation null windows")
+    distance_grid = np.unique(
+        np.concatenate(([float(np.min(best))], np.quantile(best, np.linspace(0.40, 1.0, 25)), [1.0]))
+    )
+    margin_grid = np.unique(
+        np.concatenate(([0.0], np.quantile(margin, np.linspace(0.0, 0.60, 16))))
+    )
+    best_choice: tuple[float, float, float, float] | None = None
+    for max_distance in distance_grid:
+        for min_margin in margin_grid:
+            prediction = candidates.copy()
+            prediction[(best > max_distance) | (margin < min_margin)] = NULL_CLASS_ID
+            macro_f1, *_ = macro_f1_present_classes(
+                y_true, prediction, labels=list(range(len(CLASS_NAMES)))
+            )
+            gesture_recall = float(
+                np.mean(prediction[y_true != NULL_CLASS_ID] == y_true[y_true != NULL_CLASS_ID])
+            ) if np.any(y_true != NULL_CLASS_ID) else 0.0
+            choice = (macro_f1, gesture_recall, -float(max_distance), float(min_margin))
+            if best_choice is None or choice > best_choice:
+                best_choice = choice
+                selected_distance = float(max_distance)
+                selected_margin = float(min_margin)
+    assert best_choice is not None
+    return RejectionThresholds(selected_distance, selected_margin, best_choice[0])
+
+
+def predict_hdc_with_rejection(
+    windows,
+    memories: np.ndarray,
+    codebooks: Codebooks,
+    thresholds: RejectionThresholds,
+    mode: str = DEFAULT_ENCODING_MODE,
+):
+    y_true, candidates, best, margin, distances = hdc_distance_features(
+        windows, memories, codebooks, mode=mode
+    )
+    prediction = candidates.copy()
+    prediction[
+        (best > thresholds.max_distance_fraction)
+        | (margin < thresholds.min_margin_fraction)
+    ] = NULL_CLASS_ID
+    return y_true, prediction, distances
 
 
 def evaluate_hdc(
@@ -155,14 +251,18 @@ HDC_EXPORT_CODEBOOK_FACTOR = 32 + 6 + 2
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default="data")
-    parser.add_argument("--splits", default="ml/splits.json")
+    parser.add_argument("--manifest", default="ml/dataset_manifest.csv")
+    parser.add_argument("--splits", default="ml/splits_within_user.json")
     parser.add_argument("--out", default="ml/results/hdc/hdc_grid.csv")
     parser.add_argument("--mode", default=DEFAULT_ENCODING_MODE, choices=["absolute", "bag", "ngram"])
     args = parser.parse_args()
 
-    sessions = load_sessions(args.data_dir)
-    windows = segment_sessions(sessions)
-    splits = build_or_load_splits(windows, args.splits, seed=SEED)
+    sessions, manifest_warnings = apply_manifest(load_sessions(args.data_dir), args.manifest)
+    for warning in manifest_warnings:
+        print(f"warning: {warning}")
+    windows = segment_sessions(sessions, enforce_perform_window=False)
+    windows = [window for window in windows if window.perform_window_overrun_samples <= 0]
+    splits = build_or_load_splits(windows, args.splits)
     assert_no_cross_session_leakage(splits)
     rows = sweep(windows, splits, Path(args.out), mode=args.mode)
     for row in rows:

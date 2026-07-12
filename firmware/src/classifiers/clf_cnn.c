@@ -1,4 +1,6 @@
 #include <errno.h>
+#include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -88,9 +90,9 @@ extern "C" int clf_init(void)
 	if (resolver.AddConv2D() != kTfLiteOk ||
 	    resolver.AddFullyConnected() != kTfLiteOk ||
 	    resolver.AddReshape() != kTfLiteOk ||
-	    resolver.AddSoftmax() != kTfLiteOk ||
-	    resolver.AddQuantize() != kTfLiteOk ||
-	    resolver.AddDequantize() != kTfLiteOk) {
+	    resolver.AddExpandDims() != kTfLiteOk ||
+	    resolver.AddMean() != kTfLiteOk ||
+	    resolver.AddSoftmax() != kTfLiteOk) {
 		LOG_ERR("Failed to register CNN TFLM ops");
 		return -EINVAL;
 	}

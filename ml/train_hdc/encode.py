@@ -71,8 +71,12 @@ def fit_level_bounds(windows) -> tuple[np.ndarray, np.ndarray]:
     if not gesture:
         raise ValueError("HDC level bounds require at least one gesture window")
     x = np.concatenate(gesture, axis=0)
-    lo = np.percentile(x, 1, axis=0).astype(np.float32)
-    hi = np.percentile(x, 99, axis=0).astype(np.float32)
+    # Train with the exact integer bounds exported to firmware. Otherwise a
+    # percentile such as 123.6 is trained in Python but rounded to 124 in C.
+    lo = np.rint(np.percentile(x, 1, axis=0)).astype(np.float32)
+    hi = np.rint(np.percentile(x, 99, axis=0)).astype(np.float32)
+    lo = np.clip(lo, -32768, 32767)
+    hi = np.clip(hi, -32768, 32767)
     hi = np.maximum(hi, lo + 1.0)
     return lo, hi
 

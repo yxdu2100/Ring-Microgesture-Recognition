@@ -29,6 +29,14 @@ config CLASSIFIER_DEBUG_STREAM
 	help
 	  Keep the raw BLE IMU stream enabled in classifier builds for validation.
 
+config CLASSIFIER_BENCHMARK_MODE
+	bool "Headless classifier power/latency benchmark"
+	default n
+	help
+	  Start sensing at boot without BLE transport. CLASSIFIER_NONE provides the
+	  sensing/firmware baseline; classifier variants keep their chronological
+	  inference cadence and expose cycle counters for debugger/PPK2 runs.
+
 config IMU_STREAM_HZ
 	int "IMU stream frequency"
 	default 120
