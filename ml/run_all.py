@@ -15,6 +15,7 @@ from ringdata import (
     CLASS_NAMES,
     apply_manifest,
     confirm_consecutive_predictions,
+    correct_activation_survival_fraction,
     load_sessions,
     match_events_to_gestures,
     recorded_hours,
@@ -120,6 +121,16 @@ def _evaluate_events(
 ) -> tuple[list[dict], list[dict]]:
     metric_rows = []
     match_rows = []
+    survival_fraction = (
+        correct_activation_survival_fraction(
+            windows,
+            predictions,
+            references,
+            minimum_run_windows=2,
+            grace_samples=hop_samples,
+        )
+        if references else float("nan")
+    )
     for consecutive in (1, 2):
         events = confirm_consecutive_predictions(
             windows,
@@ -134,6 +145,7 @@ def _evaluate_events(
             "hop_samples": hop_samples,
             "consecutive_windows": consecutive,
             "activation_events": len(events),
+            "correct_m1_activation_survival_to_m2": survival_fraction,
         }
         if references:
             metrics, matches = match_events_to_gestures(
@@ -212,6 +224,11 @@ def main() -> None:
     parser.add_argument("--rebuild-splits", action="store_true")
     parser.add_argument("--skip-cnn", action="store_true")
     parser.add_argument("--skip-hdc", action="store_true")
+    parser.add_argument(
+        "--hdc-experimental-phase-scaled",
+        action="store_true",
+        help="Run the rejected/timeboxed phase-augmentation + scaled-update ablation",
+    )
     parser.add_argument("--skip-mlc-proxy", action="store_true")
     parser.add_argument("--st-tree-dir", type=Path, default=None)
     args = parser.parse_args()
@@ -299,24 +316,34 @@ def main() -> None:
             train_windows = select_windows(windows, fold["train"])
             lo, hi = fit_level_bounds(train_windows)
             codebooks = make_codebooks(dim=2048, seed=HDC_SEED, level_min=lo, level_max=hi)
-            memories = train_hdc(train_windows, codebooks)
+            memories = train_hdc(
+                train_windows,
+                codebooks,
+                phase_augmentation=args.hdc_experimental_phase_scaled,
+                confidence_scaled_updates=args.hdc_experimental_phase_scaled,
+            )
             thresholds = fit_rejection_thresholds(val_aligned, memories, codebooks)
+            hdc_method = (
+                "hdc_D2048_reject_phase_scaled_diagnostic"
+                if args.hdc_experimental_phase_scaled else
+                "hdc_D2048_reject"
+            )
 
             def hdc_predict(target, m=memories, c=codebooks, t=thresholds):
                 y, prediction, _ = predict_hdc_with_rejection(target, m, c, t)
                 return y, prediction
 
-            predictors.append(("hdc_D2048_reject", hdc_predict, 64))
+            predictors.append((hdc_method, hdc_predict, 64))
             y_true, prediction = hdc_predict(test_aligned)
             window_rows.append({
-                "method": "hdc_D2048_reject",
+                "method": hdc_method,
                 "fold_id": fold_id,
                 "max_distance_fraction": thresholds.max_distance_fraction,
                 "min_margin_fraction": thresholds.min_margin_fraction,
                 "validation_macro_f1": thresholds.validation_macro_f1,
                 **_window_metrics(y_true, prediction),
             })
-            prediction_report(y_true, prediction, "hdc_D2048_reject", 120, fold_id, fold_dir, fail_on_collapse=False)
+            prediction_report(y_true, prediction, hdc_method, 120, fold_id, fold_dir, fail_on_collapse=False)
 
         if not args.skip_cnn:
             from train_cnn.train import train_one_rate

@@ -4,6 +4,7 @@ from .convert import raw_to_physical, physical_to_raw
 from .continuous import (
     ActivationEvent,
     confirm_consecutive_predictions,
+    correct_activation_survival_fraction,
     match_events_to_gestures,
     recorded_hours,
     stream_windows,
@@ -25,6 +26,7 @@ __all__ = [
     "Window",
     "apply_manifest",
     "confirm_consecutive_predictions",
+    "correct_activation_survival_fraction",
     "build_or_load_splits",
     "decimate_window",
     "load_session",

@@ -40,7 +40,15 @@ def _write_array(f, name: str, rows: np.ndarray) -> None:
     f.write("};\n\n")
 
 
-def export_header(windows, splits: dict, out_path: Path, dim: int = 2048, mode: str = DEFAULT_ENCODING_MODE) -> None:
+def export_header(
+    windows,
+    splits: dict,
+    out_path: Path,
+    dim: int = 2048,
+    mode: str = DEFAULT_ENCODING_MODE,
+    phase_augmentation: bool = False,
+    confidence_scaled_updates: bool = False,
+) -> None:
     if dim != 2048:
         raise ValueError("firmware/src/classifiers/clf_hdc.c currently asserts HDC dimension is 2048")
     codebooks = make_codebooks(dim=dim)
@@ -49,7 +57,13 @@ def export_header(windows, splits: dict, out_path: Path, dim: int = 2048, mode: 
         raise ValueError("no train windows available for HDC export")
     lo, hi = fit_level_bounds(train_w)
     codebooks = make_codebooks(dim=dim, level_min=lo, level_max=hi)
-    memories = train_hdc(train_w, codebooks, mode=mode)
+    memories = train_hdc(
+        train_w,
+        codebooks,
+        mode=mode,
+        phase_augmentation=phase_augmentation,
+        confidence_scaled_updates=confidence_scaled_updates,
+    )
     class_bits = _class_bits(memories, codebooks)
     val_w = select_windows(windows, splits["cross_session"].get("val", []))
     thresholds = fit_rejection_thresholds(val_w, memories, codebooks, mode=mode)
@@ -59,6 +73,8 @@ def export_header(windows, splits: dict, out_path: Path, dim: int = 2048, mode: 
         f.write("#include <stdint.h>\n\n")
         f.write(f"// data_git_hash: {_git_hash(Path('.'))}\n")
         f.write(f"// hdc_encoding_mode: {mode}\n")
+        f.write(f"// phase_augmentation: {phase_augmentation}\n")
+        f.write(f"// confidence_scaled_updates: {confidence_scaled_updates}\n")
         f.write("// word order matches clf_hdc.c: bit 0 is LSB, local permutation rotates whole words forward.\n")
         f.write(f"#define HDC_DIM_WORDS {dim // 32}U\n")
         f.write(f"#define HDC_LEVEL_COUNT {HDC_LEVEL_COUNT}U\n")
@@ -89,6 +105,8 @@ def main() -> None:
     parser.add_argument("--out", default="firmware/src/classifiers/generated/hdc_memories.h")
     parser.add_argument("--mode", default=DEFAULT_ENCODING_MODE, choices=["absolute", "bag", "ngram"])
     parser.add_argument("--drop-invalid-windows", action="store_true")
+    parser.add_argument("--phase-augmentation", action="store_true")
+    parser.add_argument("--confidence-scaled-updates", action="store_true")
     args = parser.parse_args()
     sessions, manifest_warnings = apply_manifest(load_sessions(args.data_dir), args.manifest)
     for warning in manifest_warnings:
@@ -99,7 +117,14 @@ def main() -> None:
     windows = segment_sessions(sessions, enforce_perform_window=False)
     windows = [w for w in windows if w.perform_window_overrun_samples <= 0]
     splits = build_or_load_splits(windows, args.splits)
-    export_header(windows, splits, Path(args.out), mode=args.mode)
+    export_header(
+        windows,
+        splits,
+        Path(args.out),
+        mode=args.mode,
+        phase_augmentation=args.phase_augmentation,
+        confidence_scaled_updates=args.confidence_scaled_updates,
+    )
     print(f"wrote {args.out}")
 
 

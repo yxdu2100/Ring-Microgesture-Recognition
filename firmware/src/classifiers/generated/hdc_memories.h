@@ -3,8 +3,10 @@
 
 #include <stdint.h>
 
-// data_git_hash: 5afcbcf
+// data_git_hash: cf67fcf
 // hdc_encoding_mode: ngram
+// phase_augmentation: False
+// confidence_scaled_updates: False
 // word order matches clf_hdc.c: bit 0 is LSB, local permutation rotates whole words forward.
 #define HDC_DIM_WORDS 64U
 #define HDC_LEVEL_COUNT 32U

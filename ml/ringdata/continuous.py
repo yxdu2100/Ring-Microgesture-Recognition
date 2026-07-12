@@ -178,6 +178,8 @@ def match_events_to_gestures(
                 "predicted_label": "",
                 "outcome": "missed",
                 "latency_ms": "",
+                "event_start_sample_id": "",
+                "event_end_sample_id": "",
             })
             continue
         idx, event = min(candidates, key=lambda item: item[1].end_sample_id)
@@ -197,6 +199,8 @@ def match_events_to_gestures(
             "predicted_label": event.class_name,
             "outcome": outcome,
             "latency_ms": latency_ms,
+            "event_start_sample_id": event.start_sample_id,
+            "event_end_sample_id": event.end_sample_id,
         })
 
     unmatched = [event for idx, event in enumerate(ordered_events) if idx not in used_events]
@@ -214,7 +218,71 @@ def match_events_to_gestures(
     return metrics, rows
 
 
+def correct_activation_survival_fraction(
+    windows: list[Window],
+    predictions,
+    gesture_windows: list[Window],
+    minimum_run_windows: int = 2,
+    grace_samples: int = 64,
+) -> float:
+    """Fraction of correct M=1 activations whose prediction run reaches M."""
+    predictions = np.asarray(predictions, dtype=np.int64)
+    if len(windows) != len(predictions):
+        raise ValueError("window/prediction length mismatch")
+    run_lengths: dict[tuple[str, int, int, int], int] = {}
+    run_start_index = 0
+
+    def close_run(end_index: int) -> None:
+        if end_index < run_start_index:
+            return
+        prediction = int(predictions[run_start_index])
+        if prediction == NULL_CLASS_ID:
+            return
+        first = windows[run_start_index]
+        run_lengths[(
+            first.session_id,
+            prediction,
+            first.start_sample_id,
+            first.end_sample_id,
+        )] = end_index - run_start_index + 1
+
+    for index in range(1, len(windows)):
+        previous = windows[index - 1]
+        current = windows[index]
+        contiguous = (
+            previous.session_id == current.session_id
+            and current.start_sample_id > previous.start_sample_id
+            and current.start_sample_id <= previous.end_sample_id + 1
+        )
+        if not contiguous or predictions[index] != predictions[index - 1]:
+            close_run(index - 1)
+            run_start_index = index
+    if windows:
+        close_run(len(windows) - 1)
+
+    m1_events = confirm_consecutive_predictions(windows, predictions, consecutive=1)
+    _, matches = match_events_to_gestures(
+        m1_events,
+        gesture_windows,
+        grace_samples=grace_samples,
+    )
+    correct = [row for row in matches if row["outcome"] == "correct"]
+    if not correct:
+        return float("nan")
+    surviving = 0
+    for row in correct:
+        class_id = CLASS_TO_ID[row["predicted_label"]]
+        key = (
+            row["session_id"],
+            class_id,
+            int(row["event_start_sample_id"]),
+            int(row["event_end_sample_id"]),
+        )
+        if run_lengths.get(key, 0) >= minimum_run_windows:
+            surviving += 1
+    return surviving / len(correct)
+
+
 def recorded_hours(sessions: Iterable[Session]) -> float:
     """Return actual sampled exposure, excluding missing/disconnected spans."""
     return sum(len(session.raw) / float(session.sample_rate_hz) for session in sessions) / 3600.0
-
