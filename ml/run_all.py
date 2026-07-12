@@ -92,10 +92,18 @@ def _window_metrics(y_true, y_pred) -> dict:
     return row
 
 
-def _prediction_rows(windows, predictions, method: str, fold_id: str, stream_kind: str):
+def _prediction_rows(
+    windows,
+    predictions,
+    method: str,
+    fold_id: str,
+    stream_kind: str,
+    diagnostic: bool,
+):
     return [
         {
             "method": method,
+            "diagnostic": diagnostic,
             "fold_id": fold_id,
             "stream_kind": stream_kind,
             "session_id": window.session_id,
@@ -117,6 +125,7 @@ def _evaluate_events(
     references,
     stream_kind: str,
     hop_samples: int,
+    diagnostic: bool,
     exposure_hours: float | None = None,
 ) -> tuple[list[dict], list[dict]]:
     metric_rows = []
@@ -140,6 +149,7 @@ def _evaluate_events(
         )
         row = {
             "method": method,
+            "diagnostic": diagnostic,
             "fold_id": fold_id,
             "stream_kind": stream_kind,
             "hop_samples": hop_samples,
@@ -157,6 +167,7 @@ def _evaluate_events(
             for match in matches:
                 match.update({
                     "method": method,
+                    "diagnostic": diagnostic,
                     "fold_id": fold_id,
                     "stream_kind": stream_kind,
                     "consecutive_windows": consecutive,
@@ -208,10 +219,44 @@ def _aggregate(rows: list[dict], key: str = "gesture_macro_f1") -> list[dict]:
         values = np.array([row[key] for row in group], dtype=np.float64)
         output.append({
             "method": method,
+            "diagnostic": bool(group[0].get("diagnostic", False)),
             "folds": len(group),
             f"{key}_mean": float(np.nanmean(values)),
             f"{key}_sample_std": float(np.nanstd(values, ddof=1)) if len(values) > 1 else 0.0,
         })
+    return output
+
+
+def _diagnostic_comparison(window_rows: list[dict], event_rows: list[dict]) -> list[dict]:
+    """Summarize representation methods without changing the frozen primary."""
+    output = []
+    for method in sorted({row["method"] for row in window_rows}):
+        method_windows = [row for row in window_rows if row["method"] == method]
+        row = {
+            "method": method,
+            "diagnostic": bool(method_windows[0].get("diagnostic", False)),
+            "folds": len(method_windows),
+            "gesture_macro_f1_mean": float(np.mean([
+                item["gesture_macro_f1"] for item in method_windows
+            ])),
+        }
+        for stream_kind, metric_name, key in (
+            ("guided_test", "guided_event_recall", "event_recall"),
+            ("free_living_development", "development_fp_per_hour", "false_activations_per_hour"),
+        ):
+            for consecutive in (1, 2):
+                values = [
+                    item[key]
+                    for item in event_rows
+                    if item["method"] == method
+                    and item["stream_kind"] == stream_kind
+                    and item["consecutive_windows"] == consecutive
+                    and key in item
+                ]
+                row[f"{metric_name}_m{consecutive}_mean"] = (
+                    float(np.mean(values)) if values else float("nan")
+                )
+        output.append(row)
     return output
 
 
@@ -224,6 +269,11 @@ def main() -> None:
     parser.add_argument("--rebuild-splits", action="store_true")
     parser.add_argument("--skip-cnn", action="store_true")
     parser.add_argument("--skip-hdc", action="store_true")
+    parser.add_argument(
+        "--skip-hdc-features",
+        action="store_true",
+        help="Skip the Python-only feature-representation HDC diagnostic",
+    )
     parser.add_argument(
         "--hdc-experimental-phase-scaled",
         action="store_true",
@@ -279,13 +329,23 @@ def main() -> None:
         # MEMS Studio feature windows advance by one complete feature window;
         # the MCU classifiers use the deployed 50% overlap.  Event metrics must
         # preserve those actual cadences or M=2 latency/FP comparisons are false.
-        predictors: list[tuple[str, object, int]] = []
+        predictors: list[tuple[str, object, int, bool]] = []
         if not args.skip_mlc_proxy:
             from train_mlc.tree import train_tree
 
             classifier, _, y_true, prediction = train_tree(windows, fold_wrapper)
-            predictors.append(("mlc_proxy_tree", lambda target, c=classifier: _predict_tree(c, target), 128))
-            row = {"method": "mlc_proxy_tree", "fold_id": fold_id, **_window_metrics(y_true, prediction)}
+            predictors.append((
+                "mlc_proxy_tree",
+                lambda target, c=classifier: _predict_tree(c, target),
+                128,
+                False,
+            ))
+            row = {
+                "method": "mlc_proxy_tree",
+                "diagnostic": False,
+                "fold_id": fold_id,
+                **_window_metrics(y_true, prediction),
+            }
             window_rows.append(row)
             prediction_report(y_true, prediction, "mlc_proxy_tree", 120, fold_id, fold_dir, fail_on_collapse=False)
 
@@ -295,9 +355,15 @@ def main() -> None:
 
             classifier = MLCTreeClassifier.from_file(st_path, precision="fp16")
             y_true, prediction = classifier.predict_windows(test_aligned)
-            predictors.append(("mlc_sensor_tree", lambda target, c=classifier: c.predict_windows(target), 128))
+            predictors.append((
+                "mlc_sensor_tree",
+                lambda target, c=classifier: c.predict_windows(target),
+                128,
+                False,
+            ))
             window_rows.append({
                 "method": "mlc_sensor_tree",
+                "diagnostic": False,
                 "fold_id": fold_id,
                 "tree_path": str(st_path),
                 **_window_metrics(y_true, prediction),
@@ -333,10 +399,11 @@ def main() -> None:
                 y, prediction, _ = predict_hdc_with_rejection(target, m, c, t)
                 return y, prediction
 
-            predictors.append((hdc_method, hdc_predict, 64))
+            predictors.append((hdc_method, hdc_predict, 64, False))
             y_true, prediction = hdc_predict(test_aligned)
             window_rows.append({
                 "method": hdc_method,
+                "diagnostic": False,
                 "fold_id": fold_id,
                 "max_distance_fraction": thresholds.max_distance_fraction,
                 "min_margin_fraction": thresholds.min_margin_fraction,
@@ -344,6 +411,75 @@ def main() -> None:
                 **_window_metrics(y_true, prediction),
             })
             prediction_report(y_true, prediction, hdc_method, 120, fold_id, fold_dir, fail_on_collapse=False)
+
+            if not args.skip_hdc_features:
+                from train_hdc.feature_encode import (
+                    encode_feature_window,
+                    fit_feature_codebooks,
+                )
+
+                feature_codebooks = fit_feature_codebooks(
+                    train_windows,
+                    dim=2048,
+                    level_count=32,
+                    seed=HDC_SEED,
+                )
+
+                def feature_encoder(raw, c=feature_codebooks):
+                    return encode_feature_window(raw, c)
+
+                feature_memories = train_hdc(
+                    train_windows,
+                    feature_codebooks,
+                    encoder=feature_encoder,
+                )
+                feature_thresholds = fit_rejection_thresholds(
+                    val_aligned,
+                    feature_memories,
+                    feature_codebooks,
+                    encoder=feature_encoder,
+                )
+                feature_method = "hdc_D2048_features_reject"
+
+                def feature_predict(
+                    target,
+                    m=feature_memories,
+                    c=feature_codebooks,
+                    t=feature_thresholds,
+                    e=feature_encoder,
+                ):
+                    y, feature_prediction, _ = predict_hdc_with_rejection(
+                        target,
+                        m,
+                        c,
+                        t,
+                        encoder=e,
+                    )
+                    return y, feature_prediction
+
+                predictors.append((feature_method, feature_predict, 64, True))
+                y_true, prediction = feature_predict(test_aligned)
+                window_rows.append({
+                    "method": feature_method,
+                    "diagnostic": True,
+                    "diagnostic_reason": "tree_feature_representation",
+                    "fold_id": fold_id,
+                    "feature_count": len(feature_codebooks.feature_names),
+                    "level_count": len(feature_codebooks.levels),
+                    "max_distance_fraction": feature_thresholds.max_distance_fraction,
+                    "min_margin_fraction": feature_thresholds.min_margin_fraction,
+                    "validation_macro_f1": feature_thresholds.validation_macro_f1,
+                    **_window_metrics(y_true, prediction),
+                })
+                prediction_report(
+                    y_true,
+                    prediction,
+                    feature_method,
+                    120,
+                    fold_id,
+                    fold_dir,
+                    fail_on_collapse=False,
+                )
 
         if not args.skip_cnn:
             from train_cnn.train import train_one_rate
@@ -363,19 +499,28 @@ def main() -> None:
                 "cnn_float",
                 lambda target, model=model_path, stats=stats_path: _predict_cnn_model(model, stats, target),
                 64,
+                False,
             ))
             window_rows.append({
                 "method": "cnn_float",
+                "diagnostic": False,
                 "fold_id": fold_id,
                 **_window_metrics(cnn_result["_y_true"], cnn_result["_y_pred"]),
             })
 
-        for method, predictor, hop_samples in predictors:
+        for method, predictor, hop_samples, diagnostic in predictors:
             for stream_kind, exposure_sessions, references in stream_sets:
                 stream = stream_windows(exposure_sessions, hop_samples=hop_samples)
                 _, prediction = predictor(stream)
                 chronological_prediction_rows.extend(
-                    _prediction_rows(stream, prediction, method, fold_id, stream_kind)
+                    _prediction_rows(
+                        stream,
+                        prediction,
+                        method,
+                        fold_id,
+                        stream_kind,
+                        diagnostic,
+                    )
                 )
                 exposure = None if references else recorded_hours(exposure_sessions)
                 metrics, matches = _evaluate_events(
@@ -386,27 +531,48 @@ def main() -> None:
                     references,
                     stream_kind,
                     hop_samples,
+                    diagnostic,
                     exposure,
                 )
                 event_rows.extend(metrics)
                 event_match_rows.extend(matches)
 
     summary = _aggregate(window_rows)
+    diagnostic_comparison = _diagnostic_comparison(window_rows, event_rows)
     _write_csv(window_rows, results / "fold_window_metrics.csv")
     _write_csv(summary, results / "summary.csv")
+    _write_csv(diagnostic_comparison, results / "diagnostic_comparison.csv")
     _write_csv(event_rows, results / "event_metrics.csv")
     _write_csv(event_match_rows, results / "event_matches.csv")
     _write_csv(chronological_prediction_rows, results / "chronological_predictions.csv")
     with (results / "summary.md").open("w") as f:
         f.write("# Within-user cross-session summary\n\n")
-        f.write("| method | folds | gesture macro-F1 |\n|---|---:|---:|\n")
+        f.write("| method | diagnostic | folds | gesture macro-F1 |\n|---|---:|---:|---:|\n")
         for row in summary:
             f.write(
-                f"| {row['method']} | {row['folds']} | "
+                f"| {row['method']} | {row['diagnostic']} | {row['folds']} | "
                 f"{row['gesture_macro_f1_mean']:.4f} +/- "
                 f"{row['gesture_macro_f1_sample_std']:.4f} |\n"
             )
-        f.write("\nM=1 and M=2 activation metrics are in `event_metrics.csv`.\n")
+        f.write("\n## Representation diagnostic\n\n")
+        f.write(
+            "| method | diagnostic | window F1 | guided M1 | guided M2 | "
+            "development FP/hr M1 | development FP/hr M2 |\n"
+        )
+        f.write("|---|---:|---:|---:|---:|---:|---:|\n")
+        for row in diagnostic_comparison:
+            f.write(
+                f"| {row['method']} | {row['diagnostic']} | "
+                f"{row['gesture_macro_f1_mean']:.4f} | "
+                f"{row['guided_event_recall_m1_mean']:.4f} | "
+                f"{row['guided_event_recall_m2_mean']:.4f} | "
+                f"{row['development_fp_per_hour_m1_mean']:.2f} | "
+                f"{row['development_fp_per_hour_m2_mean']:.2f} |\n"
+            )
+        f.write(
+            "\nThe feature-HDC row is Python-only and cannot inherit the raw-HDC "
+            "firmware resource measurements.\n"
+        )
     print(f"wrote within-user results to {results}")
 
 

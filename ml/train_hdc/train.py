@@ -130,6 +130,7 @@ def train_hdc(
     mode: str = DEFAULT_ENCODING_MODE,
     phase_augmentation: bool = False,
     confidence_scaled_updates: bool = False,
+    encoder=None,
 ) -> np.ndarray:
     memories = np.zeros((len(CLASS_NAMES), codebooks.dim), dtype=np.int32)
     encoded = []
@@ -146,7 +147,7 @@ def train_hdc(
             for window in _balanced_windows_baseline(train_w, SEED + codebooks.dim)
         ]
     for raw, class_id in examples:
-        q = encode_window(raw, codebooks, mode=mode)
+        q = encoder(raw) if encoder is not None else encode_window(raw, codebooks, mode=mode)
         encoded.append(q)
         labels.append(class_id)
         memories[class_id] += _signed(q)
@@ -233,18 +234,30 @@ def validation_diagnostic_sweep(
     return rows
 
 
-def predict_hdc(windows, memories: np.ndarray, codebooks: Codebooks, mode: str = DEFAULT_ENCODING_MODE) -> tuple[np.ndarray, np.ndarray]:
+def predict_hdc(
+    windows,
+    memories: np.ndarray,
+    codebooks: Codebooks,
+    mode: str = DEFAULT_ENCODING_MODE,
+    encoder=None,
+) -> tuple[np.ndarray, np.ndarray]:
     class_bits = _class_bits(memories, codebooks)
     y_true = []
     y_pred = []
     for window in windows:
-        q = encode_window(window.raw, codebooks, mode=mode)
+        q = encoder(window.raw) if encoder is not None else encode_window(window.raw, codebooks, mode=mode)
         y_true.append(window.class_id)
         y_pred.append(int(np.argmin(hamming(q, class_bits))))
     return np.array(y_true, dtype=np.int64), np.array(y_pred, dtype=np.int64)
 
 
-def hdc_distance_features(windows, memories: np.ndarray, codebooks: Codebooks, mode: str = DEFAULT_ENCODING_MODE):
+def hdc_distance_features(
+    windows,
+    memories: np.ndarray,
+    codebooks: Codebooks,
+    mode: str = DEFAULT_ENCODING_MODE,
+    encoder=None,
+):
     """Return four-gesture nearest-prototype distances and confidence margins."""
     class_bits = _class_bits(memories, codebooks)[:NULL_CLASS_ID]
     y_true = []
@@ -253,7 +266,7 @@ def hdc_distance_features(windows, memories: np.ndarray, codebooks: Codebooks, m
     margin_fraction = []
     all_distances = []
     for window in windows:
-        query = encode_window(window.raw, codebooks, mode=mode)
+        query = encoder(window.raw) if encoder is not None else encode_window(window.raw, codebooks, mode=mode)
         distances = hamming(query, class_bits).astype(np.float32)
         order = np.argsort(distances)
         best = int(order[0])
@@ -277,10 +290,11 @@ def fit_rejection_thresholds(
     memories: np.ndarray,
     codebooks: Codebooks,
     mode: str = DEFAULT_ENCODING_MODE,
+    encoder=None,
 ) -> RejectionThresholds:
     """Fit gesture-to-null rejection using validation data only."""
     y_true, candidates, best, margin, _ = hdc_distance_features(
-        validation_windows, memories, codebooks, mode=mode
+        validation_windows, memories, codebooks, mode=mode, encoder=encoder
     )
     if len(y_true) == 0 or not np.any(y_true == NULL_CLASS_ID):
         raise ValueError("HDC rejection requires validation null windows")
@@ -316,9 +330,10 @@ def predict_hdc_with_rejection(
     codebooks: Codebooks,
     thresholds: RejectionThresholds,
     mode: str = DEFAULT_ENCODING_MODE,
+    encoder=None,
 ):
     y_true, candidates, best, margin, distances = hdc_distance_features(
-        windows, memories, codebooks, mode=mode
+        windows, memories, codebooks, mode=mode, encoder=encoder
     )
     prediction = candidates.copy()
     prediction[
