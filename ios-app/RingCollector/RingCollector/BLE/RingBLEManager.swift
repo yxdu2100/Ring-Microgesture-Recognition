@@ -25,6 +25,7 @@ final class RingBLEManager: NSObject {
     private var keepaliveTimer: Timer?
     private var lastPeripheralIdentifier: UUID?
     private var disconnectedThisSession = false
+    private var shouldRebaseNextStreamStart = false
     private var pendingStreamStart = false
     private var imuNotificationsReady = false
     private var classificationNotificationsReady = false
@@ -100,6 +101,7 @@ final class RingBLEManager: NSObject {
         unwrapper.reset()
         lastUnwrappedSampleID = nil
         disconnectedThisSession = false
+        shouldRebaseNextStreamStart = false
     }
 
     func startStreaming() {
@@ -120,10 +122,12 @@ final class RingBLEManager: NSObject {
         if classificationCharacteristic != nil && !classificationNotificationsReady {
             return
         }
-        if disconnectedThisSession {
+        if shouldRebaseNextStreamStart {
             unwrapper.markFirmwareWillRestart()
+            shouldRebaseNextStreamStart = false
         }
         writeCommand(BLEConstants.commandStart)
+        isStreaming = true
         startKeepalive()
     }
 
@@ -231,6 +235,7 @@ extension RingBLEManager: CBCentralManagerDelegate {
         stopKeepalive()
         connectionState = .disconnected
         disconnectedThisSession = true
+        shouldRebaseNextStreamStart = pendingStreamStart
         onConnectionEvent?("disconnect", lastUnwrappedSampleID)
 
         if shouldAutoReconnect {
@@ -287,7 +292,7 @@ extension RingBLEManager: CBPeripheralDelegate {
             return
         }
 
-        if characteristic.isNotifying, isStreaming {
+        if characteristic.isNotifying, pendingStreamStart {
             activateStreamingIfReady()
         }
     }

@@ -83,32 +83,50 @@ def evaluate_hdc(
     dim: int,
     out_dir: Path,
     mode: str = DEFAULT_ENCODING_MODE,
+    split_type: str = "cross_session",
 ) -> tuple[float, dict]:
     y_true, y_pred = predict_hdc(windows, memories, codebooks, mode=mode)
     acc = float(np.mean(y_true == y_pred)) if len(y_true) else 0.0
-    report = prediction_report(y_true, y_pred, f"hdc_{mode}_D{dim}", rate_hz, "cross_session", out_dir, fail_on_collapse=False)
+    report = prediction_report(y_true, y_pred, f"hdc_{mode}_D{dim}", rate_hz, split_type, out_dir, fail_on_collapse=False)
     return acc, report
 
 
-def sweep(windows, splits: dict, out_csv: Path, mode: str = DEFAULT_ENCODING_MODE) -> list[dict]:
+def sweep(
+    windows,
+    splits: dict,
+    out_csv: Path,
+    mode: str = DEFAULT_ENCODING_MODE,
+    split_key: str = "cross_session",
+    report_split_type: str | None = None,
+) -> list[dict]:
+    report_split_type = report_split_type or split_key
     rows = []
     for rate in (120, 60, 30):
         rate_windows = windows if rate == 120 else resample_windows(windows, rate)
-        train_w = select_windows(rate_windows, splits["cross_session"]["train"])
+        train_w = select_windows(rate_windows, splits[split_key]["train"])
         lo, hi = fit_level_bounds(train_w)
         for dim in (1024, 2048, 4096):
             codebooks = make_codebooks(dim=dim, seed=SEED, level_min=lo, level_max=hi)
-            test_w = select_windows(rate_windows, splits["cross_session"]["test"])
+            test_w = select_windows(rate_windows, splits[split_key]["test"])
             if not train_w or not test_w:
                 raise ValueError(f"HDC sweep rate {rate} D {dim}: empty train/test split")
             memories = train_hdc(train_w, codebooks, mode=mode)
-            acc, report = evaluate_hdc(test_w, memories, codebooks, rate, dim, out_csv.parent, mode=mode)
+            acc, report = evaluate_hdc(
+                test_w,
+                memories,
+                codebooks,
+                rate,
+                dim,
+                out_csv.parent,
+                mode=mode,
+                split_type=report_split_type,
+            )
             rows.append(
                 {
                     "method": "hdc",
                     "encoding_mode": mode,
                     "rate_hz": rate,
-                    "split_type": "cross_session",
+                    "split_type": report_split_type,
                     "dim": dim,
                     "accuracy": acc,
                     "macro_f1": report["macro_f1"],

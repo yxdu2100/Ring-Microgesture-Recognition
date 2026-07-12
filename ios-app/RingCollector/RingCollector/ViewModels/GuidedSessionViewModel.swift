@@ -34,7 +34,14 @@ final class GuidedSessionViewModel {
     private var extraRepsForBlock = 0
 
     let performDuration: TimeInterval = 2.5
-    let restDuration: TimeInterval = 1.5
+
+    private var countdownStart: Int {
+        settings.fastGuidedMode ? 1 : 3
+    }
+
+    private var restDuration: TimeInterval {
+        settings.fastGuidedMode ? 0.5 : 1.5
+    }
 
     var currentGesture: GestureDefinition? {
         guard currentBlockIndex < blocks.count else { return nil }
@@ -68,7 +75,8 @@ final class GuidedSessionViewModel {
                 participantID: settings.participantID,
                 mode: .guided,
                 gestureSetVersion: settings.gestureSetVersion,
-                imuConfig: settings.imuConfig
+                imuConfig: settings.imuConfig,
+                notes: settings.fastGuidedMode ? "guided_fast_mode=true" : ""
             )
         } catch {
             errorMessage = error.localizedDescription
@@ -139,7 +147,7 @@ final class GuidedSessionViewModel {
     private func runCurrentRep() async {
         guard !Task.isCancelled else { return }
 
-        for tick in stride(from: 3, through: 1, by: -1) {
+        for tick in stride(from: countdownStart, through: 1, by: -1) {
             phase = .countdown(tick)
             FeedbackManager.countdownTick()
             try? await Task.sleep(for: .seconds(1))

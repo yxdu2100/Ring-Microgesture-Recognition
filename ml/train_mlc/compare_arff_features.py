@@ -21,7 +21,7 @@ from train_mlc.features import (
 from train_mlc.st_tree import ST_TO_PROJECT_CLASS
 
 SEED = 20260706
-LINEAR_GYRO_FEATURES = {"PEAK_TO_PEAK", "MINIMUM", "MAXIMUM", "MEAN"}
+LINEAR_GYRO_FEATURES = {"PEAK_TO_PEAK", "MINIMUM", "MAXIMUM", "MEAN", "ABS_MEAN", "ABS_MAXIMUM"}
 SQUARED_GYRO_FEATURES = {"VARIANCE", "ENERGY"}
 
 
@@ -106,7 +106,10 @@ def mems_ordered_windows(
     if export_dir is not None:
         export_path = Path(export_dir)
         if export_path.exists():
-            by_st_label = _windows_in_export_file_order(train_w, export_path)
+            try:
+                by_st_label = _windows_in_export_file_order(train_w, export_path)
+            except ValueError as exc:
+                print(f"WARNING: ignoring stale MEMS export cache: {exc}")
     if by_st_label is None:
         by_st_label = {}
         for st_label, project_label in ST_TO_PROJECT_CLASS.items():

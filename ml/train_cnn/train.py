@@ -108,21 +108,13 @@ def _arrays(windows, mean: np.ndarray, std: np.ndarray):
     return _standardize(_physical_stack(windows), mean, std), np.array([w.class_id for w in windows], dtype=np.int64)
 
 
-def _balanced_train_windows(windows, seed: int, null_multiplier: int = 2):
-    by_class = {}
-    for window in windows:
-        by_class.setdefault(window.class_id, []).append(window)
-    gesture_max = max((len(v) for k, v in by_class.items() if CLASS_NAMES[k] != "null"), default=0)
-    rng = random.Random(seed)
-    selected = []
-    for class_id, class_windows in by_class.items():
-        class_windows = sorted(class_windows, key=lambda w: w.window_id)
-        rng.shuffle(class_windows)
-        if CLASS_NAMES[class_id] == "null" and gesture_max > 0:
-            class_windows = class_windows[: null_multiplier * gesture_max]
-        selected.extend(class_windows)
-    selected = sorted(selected, key=lambda w: w.window_id)
-    return selected
+def _balanced_sample_weights(y: np.ndarray) -> np.ndarray:
+    counts = np.bincount(y, minlength=len(CLASS_NAMES)).astype(np.float32)
+    present = counts > 0
+    weights = np.ones_like(counts, dtype=np.float32)
+    if np.any(present):
+        weights[present] = float(np.sum(counts[present])) / (float(np.count_nonzero(present)) * counts[present])
+    return weights[y].astype(np.float32)
 
 
 def _validation_from_train(train_w: list, seed: int) -> tuple[list, list]:
@@ -141,11 +133,20 @@ def _validation_from_train(train_w: list, seed: int) -> tuple[list, list]:
     return new_train_w, val_w
 
 
-def train_one_rate(windows, splits: dict, rate_hz: int, out_dir: Path) -> dict:
+def train_one_rate(
+    windows,
+    splits: dict,
+    rate_hz: int,
+    out_dir: Path,
+    split_key: str = "cross_session",
+    report_split_type: str | None = None,
+    return_predictions: bool = False,
+) -> dict:
     import tensorflow as tf
 
+    report_split_type = report_split_type or split_key
     rate_windows = windows if rate_hz == 120 else resample_windows(windows, rate_hz)
-    split = splits["cross_session"]
+    split = splits[split_key]
     train_w = select_windows(rate_windows, split["train"])
     val_w = select_windows(rate_windows, split["val"])
     test_w = select_windows(rate_windows, split["test"])
@@ -159,11 +160,11 @@ def train_one_rate(windows, splits: dict, rate_hz: int, out_dir: Path) -> dict:
             f"got {len(train_w)}/{len(val_w)}/{len(test_w)}"
         )
 
-    train_w = _balanced_train_windows(train_w, SEED + rate_hz)
     mean, std = _fit_standardizer(train_w)
     x_train, y_train = _arrays(train_w, mean, std)
     x_val, y_val = _arrays(val_w, mean, std)
     x_test, y_test = _arrays(test_w, mean, std)
+    sample_weight = _balanced_sample_weights(y_train)
     rng = np.random.default_rng(SEED + rate_hz)
 
     model = build_model(window_samples=x_train.shape[1])
@@ -175,22 +176,22 @@ def train_one_rate(windows, splits: dict, rate_hz: int, out_dir: Path) -> dict:
 
         def __getitem__(self, idx):
             sl = slice(idx * 32, min(len(x_train), (idx + 1) * 32))
-            return augment_batch(x_train[sl], rng), y_train[sl]
+            return augment_batch(x_train[sl], rng), y_train[sl], sample_weight[sl]
 
     stopper = MacroF1EarlyStopping(x_val, y_val, patience=20)
     model.fit(AugmentSequence(), epochs=200, verbose=0, callbacks=[stopper.callback])
     pred = np.argmax(model.predict(x_test, verbose=0), axis=1)
-    report = prediction_report(y_test, pred, "cnn_float", rate_hz, "cross_session", out_dir, fail_on_collapse=False)
+    report = prediction_report(y_test, pred, "cnn_float", rate_hz, report_split_type, out_dir, fail_on_collapse=False)
     macro_f1 = report["macro_f1"]
 
     out_dir.mkdir(parents=True, exist_ok=True)
     model_path = out_dir / f"cnn_{rate_hz}hz.keras"
     model.save(model_path)
     np.savez(out_dir / f"cnn_{rate_hz}hz_standardizer.npz", mean=mean, std=std)
-    return {
+    row = {
         "method": "cnn_float",
         "rate_hz": rate_hz,
-        "split_type": "cross_session",
+        "split_type": report_split_type,
         "macro_f1": macro_f1,
         "macro_f1_all_classes": report["macro_f1_all_classes"],
         "present_class_count": report["present_class_count"],
@@ -202,6 +203,10 @@ def train_one_rate(windows, splits: dict, rate_hz: int, out_dir: Path) -> dict:
         "collapse_flag": report["collapse_flag"],
         "model": str(model_path),
     }
+    if return_predictions:
+        row["_y_true"] = y_test
+        row["_y_pred"] = pred
+    return row
 
 
 def main() -> None:

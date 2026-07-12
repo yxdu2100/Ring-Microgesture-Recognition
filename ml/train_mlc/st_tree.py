@@ -16,6 +16,10 @@ ST_TO_PROJECT_CLASS = {
     "doublepinch": "double_pinch",
     "pinchhold": "pinch_hold",
     "flicker": "double_flick",
+    "double_side_tap": "double_side_tap",
+    "double_pinch": "double_pinch",
+    "pinch_hold": "pinch_hold",
+    "double_flick": "double_flick",
     "null": "null",
 }
 PROJECT_TO_ST_CLASS = {v: k for k, v in ST_TO_PROJECT_CLASS.items()}

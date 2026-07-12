@@ -158,6 +158,8 @@ def mlc_feature_value(
     yf = y.astype(np.float32 if precision == "fp16" else np.float64)
     if feature_name == "MEAN":
         value = np.mean(yf)
+    elif feature_name == "ABS_MEAN":
+        value = np.mean(np.abs(yf))
     elif feature_name == "VARIANCE":
         value = np.var(yf)
     elif feature_name == "ENERGY":
@@ -168,6 +170,8 @@ def mlc_feature_value(
         value = np.min(yf)
     elif feature_name == "MAXIMUM":
         value = np.max(yf)
+    elif feature_name == "ABS_MAXIMUM":
+        value = np.max(np.abs(yf))
     elif feature_name == "ZERO_CROSSING":
         centered = yf - np.mean(yf)
         signs = np.signbit(centered)

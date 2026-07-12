@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 
-// data_git_hash: d687358
-// cross_session_macro_f1: 0.783424
+// data_git_hash: 407313a
+// cross_session_macro_f1: 0.799685
 #define TREE_SW_FEATURE_COUNT 40U
 #define TREE_SW_MAX_DEPTH 6U
 
@@ -53,54 +53,66 @@ static const char *const tree_sw_feature_names[TREE_SW_FEATURE_COUNT] = {
 
 static inline int tree_sw_predict(const float f[TREE_SW_FEATURE_COUNT])
 {
-	if (f[18] <= 1247.10083f) {
-		if (f[23] <= 806.152344f) {
-			if (f[38] <= 275.3116f) {
-				if (f[9] <= 1.5f) {
-					return 4;
-				} else {
-					return 4;
-				}
-			} else {
-				if (f[30] <= 1.04131758f) {
-					if (f[11] <= 0.0513880197f) {
-						if (f[16] <= 3857.87036f) {
+	if (f[18] <= 1146.8811f) {
+		if (f[21] <= 19800.2578f) {
+			if (f[6] <= 0.0402889289f) {
+				if (f[3] <= 1.04138184f) {
+					if (f[8] <= 1.39794922f) {
+						if (f[5] <= -0.0253458023f) {
 							return 2;
 						} else {
 							return 4;
 						}
 					} else {
-						return 4;
+						if (f[0] <= -0.101973534f) {
+							return 4;
+						} else {
+							return 0;
+						}
 					}
 				} else {
-					if (f[2] <= 0.0542657673f) {
-						if (f[11] <= 0.103777312f) {
-							return 0;
+					if (f[35] <= 81.3234291f) {
+						if (f[24] <= 10.5f) {
+							return 2;
 						} else {
 							return 4;
 						}
 					} else {
-						if (f[35] <= 69.4203644f) {
-							return 2;
-						} else {
+						if (f[36] <= 6754.79004f) {
 							return 4;
+						} else {
+							return 1;
+						}
+					}
+				}
+			} else {
+				if (f[4] <= 10.5f) {
+					return 4;
+				} else {
+					if (f[15] <= 6.91986084f) {
+						if (f[8] <= 1.6529541f) {
+							return 4;
+						} else {
+							return 0;
+						}
+					} else {
+						if (f[26] <= 15072.6807f) {
+							return 4;
+						} else {
+							return 2;
 						}
 					}
 				}
 			}
 		} else {
-			if (f[34] <= 11.5f) {
-				return 1;
+			if (f[24] <= 5.5f) {
+				return 2;
 			} else {
 				return 1;
 			}
 		}
 	} else {
-		if (f[17] <= 36026.627f) {
-			return 3;
-		} else {
-			return 3;
-		}
+		return 3;
 	}
 }
 

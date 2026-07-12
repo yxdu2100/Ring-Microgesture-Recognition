@@ -18,6 +18,9 @@ final class AppSettings {
     var showRedonPrompt: Bool {
         didSet { UserDefaults.standard.set(showRedonPrompt, forKey: Keys.showRedonPrompt) }
     }
+    var fastGuidedMode: Bool {
+        didSet { UserDefaults.standard.set(fastGuidedMode, forKey: Keys.fastGuidedMode) }
+    }
     var enabledGestureIDs: [String] {
         didSet { UserDefaults.standard.set(enabledGestureIDs, forKey: Keys.enabledGestureIDs) }
     }
@@ -34,6 +37,7 @@ final class AppSettings {
         static let gestureSetVersion = "gestureSetVersion"
         static let imuConfig = "imuConfig"
         static let showRedonPrompt = "showRedonPrompt"
+        static let fastGuidedMode = "fastGuidedMode"
         static let enabledGestureIDs = "enabledGestureIDs"
     }
 
@@ -44,6 +48,7 @@ final class AppSettings {
         gestureSetVersion = defaults.string(forKey: Keys.gestureSetVersion) ?? "v1"
         imuConfig = defaults.string(forKey: Keys.imuConfig) ?? "120hz_8g_2000dps"
         showRedonPrompt = defaults.object(forKey: Keys.showRedonPrompt) as? Bool ?? true
+        fastGuidedMode = defaults.object(forKey: Keys.fastGuidedMode) as? Bool ?? false
         enabledGestureIDs = defaults.stringArray(forKey: Keys.enabledGestureIDs)
             ?? GestureDefinition.defaults.map(\.id)
     }

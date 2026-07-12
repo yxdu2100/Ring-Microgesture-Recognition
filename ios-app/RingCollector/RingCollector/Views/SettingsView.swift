@@ -32,6 +32,10 @@ struct SettingsView: View {
                 }
 
                 Section("Guided Mode") {
+                    Toggle("Fast mode", isOn: $settings.fastGuidedMode)
+                    Text("Uses a 1-second countdown and 0.5-second rest between guided reps.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Toggle("Re-don ring prompt between blocks", isOn: $settings.showRedonPrompt)
                 }
 
