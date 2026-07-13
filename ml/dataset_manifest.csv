@@ -23,3 +23,5 @@ session_id,participant_id,role,usage,include,notes
 20260711_017,01,structured_null,train,true,randomized structured null
 20260711_018,01,structured_null,validation,true,randomized structured null
 20260711_019,01,free_living_null,development,true,development free-living recording
+20260712_001,01,free_living_null,final_test,true,final free-living recording part 1
+20260712_002,01,free_living_null,final_test,true,final free-living recording part 2
