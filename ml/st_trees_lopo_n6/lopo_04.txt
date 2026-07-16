@@ -1,0 +1,52 @@
+F3_MAXIMUM_GYR_Y <= 6.007815
+|   F2_MINIMUM_GYR_X <= -13.007800 : double_flick (48)
+|   F2_MINIMUM_GYR_X > -13.007800
+|   |   F1_PEAK_TO_PEAK_ACC_Y <= 0.691651
+|   |   |   F6_PEAK_TO_PEAK_ACC_X <= 0.885988 : null (42/5.0)
+|   |   |   F6_PEAK_TO_PEAK_ACC_X > 0.885988 : pinch_hold (5/2.0)
+|   |   F1_PEAK_TO_PEAK_ACC_Y > 0.691651
+|   |   |   F2_MINIMUM_GYR_X <= -1.247560 : double_side_tap (42/5.0)
+|   |   |   F2_MINIMUM_GYR_X > -1.247560
+|   |   |   |   F12_ABS_ENERGY_GYR_V <= 99.437500 : double_side_tap (5)
+|   |   |   |   F12_ABS_ENERGY_GYR_V > 99.437500
+|   |   |   |   |   F13_ENERGY_GYR_Y <= 94.187500 : pinch_hold (8)
+|   |   |   |   |   F13_ENERGY_GYR_Y > 94.187500 : null (5/2.0)
+F3_MAXIMUM_GYR_Y > 6.007815
+|   F4_ABS_MEAN_GYR_V <= 1.607910 : pinch_hold (38/6.0)
+|   F4_ABS_MEAN_GYR_V > 1.607910
+|   |   F1_PEAK_TO_PEAK_ACC_Y <= 2.447265 : double_pinch (43)
+|   |   F1_PEAK_TO_PEAK_ACC_Y > 2.447265 : pinch_hold (7/4.0)
+
+Number of Leaves: 10
+Size of the tree: 19
+
+Classes:
+=> double_flick, double_pinch, double_side_tap, null, pinch_hold
+
+Features:
+=> F1_PEAK_TO_PEAK_ACC_Y, F2_MINIMUM_GYR_X, F3_MAXIMUM_GYR_Y, F4_ABS_MEAN_GYR_V, F5_VARIANCE_GYR_X, F6_PEAK_TO_PEAK_ACC_X, F7_MINIMUM_GYR_Y, F8_PEAK_TO_PEAK_GYR_X, F9_MAXIMUM_GYR_Z, F10_MINIMUM_ACC_X, F11_MINIMUM_ACC_Y, F12_ABS_ENERGY_GYR_V, F13_ENERGY_GYR_Y, F14_VARIANCE_GYR_Y, F15_MAXIMUM_GYR_X
+
+=============== Complete trainging data statistics ===============
+
+Confusion Matrix:
+                double_flick	double_pinch	double_side_tap	null	pinch_hold	  <- classified as
+double_flick    51	0	0	2	1	
+double_pinch    0	47	0	0	7	
+double_side_tap 0	0	51	3	0	
+null            0	1	4	44	5	
+pinch_hold      0	0	2	2	50	
+
+Total Number of Instances: 270
+Correctly Classified Instances: 243
+Incorrectly Classified Instances: 27
+
+Accuracy:       90.00 %
+Cohen's kappa:  87.50 %
+
+Report:         precision	recall	support
+double_flick    1.00	0.94	54
+double_pinch    0.98	0.87	54
+double_side_tap 0.89	0.94	54
+null            0.86	0.81	54
+pinch_hold      0.79	0.93	54
+avg/total       0.91	0.90	270

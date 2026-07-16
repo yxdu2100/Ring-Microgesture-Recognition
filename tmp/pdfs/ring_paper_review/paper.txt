@@ -1,0 +1,194 @@
+  Exploring Three On-Device Classifier Architectures
+               for Ring Microgestures
+                          Yuxin Du                                                Edison Thomaz
+                 yuxin.du@utexas.edu                                          ethomaz@utexas.edu
+   Department of Electrical and Computer Engineering            Department of Electrical and Computer Engineering
+           The University of Texas at Austin                            The University of Texas at Austin
+                  Austin, Texas, USA                                           Austin, Texas, USA
+Abstract                                                         1   Introduction
+Smart rings are becoming a common wearable platform,             Smart rings are becoming an increasingly important plat-
+making on-device gesture recognition an increasingly im-         form for wearable interaction, moving from research pro-
+portant input channel. Inertial measurement units (IMUs)         totypes into mainstream consumer devices [6, 9]. Much of
+are well suited to this setting because they provide informa-    their appeal comes from the form factor itself: a ring is light
+tive motion signals in a millimeter-scale, low-power package.    enough to wear all day and sits within easy reach of the
+IMU-based microgesture recognizers can place classification      thumb. This lets the thumb act on the ring without raising
+inside the sensor or on the microcontroller, but these al-       the arm, looking at a screen, or interrupting whatever the
+ternatives have rarely been compared under the same task         hands are doing, making thumb-to-finger microgestures a
+and hardware constraints. We implement three architectures       natural channel for subtle, always-available input [1]. Recog-
+on one custom ring: an in-sensor machine learning core           nizing these gestures, however, requires sensing them on the
+(MLC), a convolutional neural network (CNN), and a hyper-        ring itself, and the small form factor rules out bulky or power-
+dimensional computing (HDC) classifier. Our results show         hungry modalities such as cameras and capacitive arrays [7].
+that CNN achieves the highest within-user and mean leave-        Inertial measurement units (IMUs) have instead become the
+one-participant-out (LOPO) macro-F1, at 0.978 and 0.779,         sensor of choice: a millimeter-scale, low-power package that
+respectively. MLC remains competitive in LOPO evaluation         captures both the linear and rotational components of finger
+at 0.734 while consuming the least measured system power         motion [5]. But a ring offers only tens of milliamp-hours of
+at 6.64 mW and producing the fewest free-living false activa-    battery and a memory-limited MCU, and streaming raw data
+tions. Raw-sample HDC trails in accuracy, but a statistical-     to a phone for classification costs radio energy and moves
+feature ablation raises its within-user macro-F1 from 0.691      continuous motion data off the device, raising privacy con-
+to 0.904. These findings show that ring classifier selection     cerns [3]. As a result, recognition is increasingly run on the
+is a trade-off governed by the required balance of accuracy,     ring itself.
+energy, and continuous-stream robustness.                           On modern hardware, on-device inertial recognition can
+                                                                 execute inside the IMU through a machine learning core
+CCS Concepts                                                     (MLC), on the microcontroller (MCU) as a convolutional
+• Human-centered computing → Ubiquitous and mo-                  neural network (CNN) quantized for deployment, or on the
+bile computing; • Computer systems organization →                MCU through hyperdimensional computing (HDC) [2, 4, 8].
+Embedded systems; • Computing methodologies → Ma-                These approaches have been evaluated on different devices,
+chine learning.                                                  datasets, and tasks. This leaves an open question for on-
+                                                                 device recognition: which model to adopt, what the trade-
+Keywords                                                         offs among them are, and under what conditions each is
+smart rings, gesture recognition, on-device machine learning,    preferable. To answer this, we implement all three architec-
+wearable sensing                                                 tures on one custom ring and evaluate them on the same four
+                                                                 microgestures under a single protocol. By comparing their
+HumanSys ’26, Austin, TX, USA
+                                                                 within-user accuracy, hardware cost, and cross-user trans-
+2026. ACM ISBN 978-x-xxxx-xxxx-x/YYYY/MM
+https://doi.org/10.1145/nnnnnnn.nnnnnnn
+                                                                 fer, we reveal the key advantages and limitations of each
+                                                                 on-device recognition path and provide practical guidance
+                                                                 for choosing among them.
+HumanSys ’26, October 30, 2026, Austin, TX, USA                                                                            Du
+
+
+
+
+Figure 1: Ring platform, gesture set, and on-device classification paths. (A) The ring hardware. (B) The four target
+microgestures. (C) The MLC classifies inside the IMU and interrupts the MCU with its result; CNN and HDC process
+windowed FIFO data on the MCU.
+
+2 Methods                                                        temporal profile, while double flick has a stronger gyroscope
+2.1 Hardware                                                     signature.
+The ring integrates a Nordic nRF54L15 MCU (128 MHz Arm           2.2.2 Data Collection. Six participants contributed 25 guided
+Cortex-M33, 256 KB RAM) and an ST LSM6DSV16X six-axis            sessions. One participant completed 20 re-donned sessions,
+IMU on a 15 × 15 mm PCB. For MCU inference, samples are          while the other five participants completed one session each.
+read through the IMU’s first-in, first-out (FIFO) buffer. The    Every session contained 15 repetitions of each gesture. Par-
+MLC instead executes decision-tree inference inside the IMU,     ticipants also contributed null recordings covering every-
+allowing the MCU to remain in its interrupt-wake System          day desk activity, locomotion, object handling, and uncon-
+ON idle state. The ring is worn on the right index finger, and   strained wear. The IMU sampled three-axis acceleration and
+an asymmetric enclosure fixes its orientation. Bluetooth Low     three-axis angular velocity at 120 Hz and streamed times-
+Energy (BLE) is used only for collection and verification.       tamped samples to an iOS application over BLE.
+
+2.2    Study Design                                              2.3   Three Classification Deployments
+2.2.1 Gesture Set. We study four thumb-scale microges-           All methods operate on 128-sample (1.07 s), six-channel win-
+tures: double side tap, double pinch, pinch hold, and double     dows. CNN and HDC advance by 64 samples (0.53 s), whereas
+flick, plus a null class for non-target activity. Double pinch   the MLC advances by one non-overlapping feature window.
+and pinch hold share a contact posture and differ mainly in      MLC and CNN learn null as a fifth class; HDC treats null as
+Exploring Three On-Device Classifier Architectures for Ring Microgestures                               HumanSys ’26, October 30, 2026, Austin, TX, USA
+
+
+Table 1: Gesture macro-F1 for five-fold within-user evaluation and six-fold leave-one-participant-out evaluation.
+The LOPO mean gives each participant equal weight; deviations are sample standard deviations.
+
+                              Method     Within-user       P1      P2       P3      P4      P5     P6      LOPO mean
+                              MLC        0.945 ± 0.036 0.907 0.696 0.636 0.718 0.808 0.637 0.734 ± 0.106
+                              CNN        0.978 ± 0.015 0.857 0.884 0.600 0.772 0.750 0.810 0.779 ± 0.101
+                              HDC        0.691 ± 0.077 0.277 0.458 0.513 0.340 0.290 0.190 0.345 ± 0.121
+
+
+a rejection outcome. Continuous results are normalized by                        onset through one hop after the reference window; every
+recorded time because the methods have different decision                        activation on a free-living null stream is counted as false.
+cadences.
+                                                                                 3 Evaluation
+   In-sensor MLC. For each fold, class-balanced training win-
+dows are exported to ST MEMS Studio to train a depth-                            3.1 Within-User Recognition Accuracy
+limited decision tree over sensor-supported statistics, includ-                  Session-to-session transfer is evaluated on the 20-session
+ing means, variance, energy, peak-to-peak range, and vector                      longitudinal subset from the same participant using five
+magnitudes. Each exported tree is instantiated in an indepen-                    leave-session-out folds. Each fold uses 14 sessions for train-
+dent offline evaluator. For the deployed fold, offline decisions                 ing, two for validation, and four for testing; every session
+were verified against live sensor outputs. At runtime the                        appears in a test fold exactly once. Model fitting and selection
+MCU waits in System ON idle, wakes on an MLC interrupt,                          use only the corresponding training and validation data.
+and reads the predicted class from the sensor.                                      Table 1 reports gesture macro-F1. CNN achieves the high-
+   MCU CNN. The CNN contains three one-dimensional con-                          est mean and lowest variation, followed by MLC. Raw-sample
+volutional layers with 16, 32, and 64 filters, followed by global                HDC is less accurate and more variable across sessions.
+average pooling and a five-class output. It is trained per fold                     In a representation ablation, replacing raw-sample HDC
+                                                                                 encoding with a tree-style statistical feature vector increased
+using training-fold standardization, rotation, temporal-shift,
+                                                                                 macro-F1 to 0.904 ± 0.039. This variant was evaluated offline
+and noise augmentation, with early stopping on validation
+macro-F1. For deployment, the selected model is converted                        and is excluded from the deployment-cost comparison, but it
+by full 8-bit integer post-training quantization and executed                    shows that input representation accounts for much of HDC’s
+with TensorFlow Lite for Microcontrollers. The deployed fold                     segmented-window accuracy gap.
+retained its float validation and test macro-F1 after quantiza-
+                                                                                 3.2     Leave-One-Participant-Out Evaluation
+tion.
+                                                                                 We run six leave-one-participant-out (LOPO) folds. Each fold
+   MCU HDC. HDC uses 2,048-dimensional binary spatter                            holds out one participant and trains on the other five. So
+codes. Each sample is quantized into 32 levels using inte-                       that the 20-session participant does not dominate, we cap
+ger percentile bounds fitted on training data. Channel and                       every training participant to the same number of examples
+level hypervectors are bound into temporal trigrams and                          per gesture, and balance null the same way. Table 1 reports
+bundled into one window hypervector. Class prototypes                            each held-out participant and a mean that weights the six
+are accumulated from training examples and refined with                          equally.
+perceptron-style updates. At inference, the four gesture pro-                       CNN obtains the highest LOPO mean macro-F1 at 0.779,
+totypes compete by Hamming distance; validation-calibrated                       followed by MLC at 0.734 and HDC at 0.345. CNN and MLC
+maximum-distance and minimum-margin thresholds map                               each lead on three of the six held-out participants, indicat-
+low-confidence windows to null. Bit-exact tests verify agree-                    ing that their relative performance varies by wearer. The
+ment between offline and firmware inference.                                     CNN–MLC gap in the mean (0.045) is smaller than either
+                                                                                 method’s standard deviation, so neither clearly leads on
+2.4     Evaluation Protocol                                                      transfer. Given the small cohort and uneven session counts,
+Window accuracy is macro-F1 averaged over the four ges-                          these LOPO numbers are a first look at cross-user behavior,
+tures; the guided test set contains only gesture windows, so                     not a firm ranking
+any null prediction counts as an error. For continuous evalu-
+ation, an activation is emitted on the first window predicting                   3.3     On-Device System Cost
+a non-null gesture, followed by a 1 s refractory period. Ac-                     We measure a sensing baseline and representative-fold MLC,
+tivations are matched once to guided gestures from motion                        HDC, and int8 CNN firmware with BLE and logging disabled.
+HumanSys ’26, October 30, 2026, Austin, TX, USA                                                                                            Du
+
+
+Table 2: Power, flash, and static RAM of the firmware            guided-event recall at the one-decision operating point, yet
+configurations. Memory footprints are reported in KB             differ substantially in false activations per hour. MLC’s lower
+(1 KB = 1024 B).                                                 false-activation rate and system power therefore strengthen
+                                                                 its suitability for always-on use beyond what its segmented
+ Config.    Current (mA) Power (mW) Flash (KB) RAM (KB)          accuracy alone indicates.
+                                                                    This study has several limitations. One participant pro-
+ Baseline        1.86             7.81             61.9   26.6
+ MLC             1.58             6.64             62.0   20.7   vided the 20-session within-user dataset, while five others
+ HDC             3.34            14.03             74.4   40.2   contributed one session each for the LOPO evaluation; the
+ CNN             4.90            20.58            166.6   73.8   LOPO results should therefore be read as preliminary rather
+                                                                 than conclusive. All data were collected from the right index
+                                                                 finger using one ring placement and four gestures. Left-hand
+Current is measured at 4.2 V; flash and statically allocated     wear, other fingers, placement variation, and larger gesture
+RAM come from linked firmware images.                            sets remain to be studied. Future work should evaluate the
+   MLC has the lowest power and MCU footprint. Its current       architectures with a larger and more balanced participant
+is lower than the baseline because classification moves into     sample under these additional conditions.
+the IMU and the MCU no longer drains the raw-data FIFO;             By implementing all three classifiers on the same ring and
+this is a deployment-path difference, not the isolated cost      evaluating them under one protocol, this work turns classifier
+of adding a tree. HDC occupies an intermediate cost point,       selection into a concrete, hardware-backed trade-off. The ap-
+while CNN requires the most power, flash, and RAM because        propriate architecture depends on whether a ring prioritizes
+of its model, inference runtime, and tensor arena.               accuracy, battery life, MCU resources, or robustness dur-
+                                                                 ing continuous wear. More broadly, combining segmented
+3.4    Continuous-Stream Behavior                                recognition accuracy, LOPO evaluation, continuous-stream
+We process the complete guided recordings chronologically        behavior, and measured on-device cost provides a practical
+to measure event-level recall and separately process 2.66        template for evaluating future ring classifiers.
+hours of held-out free-living wear to measure false activa-
+tions. Using one native classifier decision per activation,      References
+guided-event recall is 0.844 for MLC, 0.822 for CNN, and         [1] Edwin Chan, Teddy Seyed, Wolfgang Stuerzlinger, Xing-Dong Yang, and
+0.505 for HDC. The corresponding false-activation rates are          Frank Maurer. 2016. User Elicitation on Single-hand Microgestures. In
+18.78, 84.15, and 728.13 per hour. Thus, segmented accuracy          Proceedings of the 2016 CHI Conference on Human Factors in Computing
+                                                                     Systems (New York, NY, USA, 2016-05-07) (CHI ’16). Association for
+alone does not characterize continuous behavior: MLC and             Computing Machinery, 3403–3414. doi:10.1145/2858036.2858589
+CNN achieve similar guided recall but differ substantially in    [2] Robert David, Jared Duke, Advait Jain, Vijay Janapa Reddi, Nat Jeffries,
+false activations.                                                   Jian Li, Nick Kreeger, Ian Nappier, Meghna Natraj, Shlomi Regev, Rocky
+                                                                     Rhodes, Tiezhen Wang, and Pete Warden. [n. d.]. TensorFlow Lite Micro:
+4     Discussion and Conclusion                                      Embedded Machine Learning on TinyML Systems. ([n. d.]).
+                                                                 [3] Yizheng Gu, Chun Yu, Zhipeng Li, Zhaoheng Li, Xiaoying Wei, and
+Our central finding is that MLC leads on power, MCU mem-             Yuanchun Shi. 2020. QwertyRing: Text Entry on Physical Surfaces Using
+ory footprint, and free-living false activations while remain-       a Ring. 4, 4 (2020), 128:1–128:29. doi:10.1145/3432204
+ing competitive in LOPO evaluation. CNN achieves the high-       [4] Pentti Kanerva. 2009. Hyperdimensional Computing: An Introduction
+est within-user accuracy and the highest mean LOPO macro-            to Computing in Distributed Representation with High-Dimensional
+                                                                     Random Vectors. 1, 2 (2009), 139–159. doi:10.1007/s12559-009-9009-8
+F1. CNN is therefore preferable when accuracy is the primary     [5] Chen Liang, Chun Yu, Yue Qin, Yuntao Wang, and Yuanchun Shi. 2021.
+requirement and its compute cost is acceptable, whereas MLC          DualRing: Enabling Subtle and Expressive Hand Interaction with Dual
+is better suited to energy-constrained, always-on operation.         IMU Rings. 5, 3 (2021), 115:1–115:27. doi:10.1145/3478114
+Raw-sample HDC trails in accuracy.                               [6] Ōura Health Oy. [n. d.]. Oura Ring. Smart Ring for Fitness, Stress, Sleep
+   Two observations help explain these trade-offs. First, rep-       & Health. https://ouraring.com/
+                                                                 [7] Roy Shilkrot, Jochen Huber, Jürgen Steimle, Suranga Nanayakkara, and
+resentation matters as much as model type. MLC operates on           Pattie Maes. 2015. Digital Digits: A Comprehensive Survey of Finger
+compact statistical features rather than raw samples, and ap-        Augmentation Devices. 48, 2 (2015), 30:1–30:29. doi:10.1145/2828993
+plying similar features to HDC raises its within-user macro-     [8] STMicroelectronics. 2023. AN5804 – LSM6DSV16X: machine learn-
+F1 from 0.691 to 0.904. This result suggests that much of            ing core. https://www.st.com/resource/en/application_note/an5804-
+raw-sample HDC’s within-user accuracy gap arises from                lsm6dsv16x-machine-learning-core-stmicroelectronics.pdf
+                                                                 [9] Zeyu Wang, Ruotong Yu, Xiangyang Wang, Jiexin Ding, Jiankai Tang,
+its input representation rather than from HDC alone. Sec-            Jun Fang, Zhe He, Zhuojun Li, Tobias Röddiger, Weiye Xu, Xiyuxing
+ond, segmented-window accuracy does not fully predict                Zhang, Huan-ang Gao, Nan Gao, Chun Yu, Yuanchun Shi, and Yuntao
+continuous-stream behavior. MLC and CNN achieve similar              Wang. 2025. Computing with Smart Rings: A Systematic Literature
+                                                                     Review. 9, 3 (2025), 137:1–137:54. doi:10.1145/3749480
+

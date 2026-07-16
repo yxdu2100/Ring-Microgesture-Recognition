@@ -1,0 +1,142 @@
+\section{Evaluation}
+
+We compare the three architectures along three dimensions: recognition under
+session and user variation, deployed system cost, and behavior on continuous
+IMU streams.
+
+\subsection{Within-User Recognition Accuracy}
+
+We evaluated session-to-session transfer using five leave-session-out folds.
+Each fold used 14 guided sessions for training, two for validation, and four
+for testing. Complete sessions remained within one split, and every session
+appeared in a test fold exactly once. Training, normalization, early stopping,
+and rejection-threshold selection were repeated within each fold using only
+its training and validation data.
+
+We report macro-F1 over the four gestures; predictions rejected as null count
+as errors. As shown in Table~\ref{tab:within_user}, CNN achieved the highest
+mean macro-F1 and the smallest variation across sessions. MLC was 3.3
+percentage points lower while executing inside the IMU. Raw-sample HDC was
+less accurate and more variable, indicating that its temporal representation
+was less robust to session variation.
+
+\begin{table}[t]
+    \centering
+    \caption{Within-user gesture macro-F1 across five leave-session-out folds.}
+    \label{tab:within_user}
+    \small
+    \begin{tabular}{lcccccc}
+        \toprule
+        Method & F1 & F2 & F3 & F4 & F5 & Mean $\pm$ SD \\
+        \midrule
+        MLC & 0.942 & 0.913 & 0.907 & 0.981 & 0.983
+            & 0.945 $\pm$ 0.036 \\
+        CNN & 0.989 & 0.959 & 0.964 & 0.987 & 0.991
+            & 0.978 $\pm$ 0.015 \\
+        HDC & 0.699 & 0.557 & 0.719 & 0.750 & 0.732
+            & 0.691 $\pm$ 0.077 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+A Python-only diagnostic that encoded the statistical feature vector rather
+than raw samples increased HDC macro-F1 to $0.904 \pm 0.039$. This result is
+excluded from the deployment comparison, but indicates that input
+representation accounts for much of the raw-HDC accuracy gap.
+
+\subsection{Cross-User Transfer}
+
+We evaluate transfer to unseen users using leave-one-participant-out (LOPO)
+folds over four participants. In each fold, all data from one
+participant are held out, while the remaining participants provide training
+and validation data. Training is balanced by participant and gesture class so
+that participants with more recordings do not dominate the fitted model. We
+report each held-out participant and an equal-participant mean because the
+available number of sessions differs across participants.
+
+\begin{table}[t]
+    \centering
+    \caption{Gesture macro-F1 for transfer to held-out participants. The final
+    row reports the equal-participant mean and sample standard deviation.}
+    \label{tab:cross_user}
+    \small
+    \begin{tabular}{lccc}
+        \toprule
+        Held-out participant & MLC & CNN & HDC \\
+        \midrule
+        P1 & 0.913 & 0.700 & 0.272 \\
+        P2 & 0.787 & 0.696 & 0.327 \\
+        P3 & 0.726 & 0.559 & 0.233 \\
+        P4 & 0.737 & 0.662 & 0.172 \\
+        \midrule
+        Mean $\pm$ SD
+            & 0.791 $\pm$ 0.085
+            & 0.654 $\pm$ 0.066
+            & 0.251 $\pm$ 0.065 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+MLC achieved the highest macro-F1 for each held-out participant and an
+equal-participant mean of 0.791, compared with 0.654 for CNN and 0.251 for HDC.
+In this limited-data setting, the statistical-feature tree transferred more
+consistently than either raw-window MCU classifier. All methods declined from
+their within-user results. Because participant balancing also caps the number
+of training examples per participant, this gap reflects both unseen-user
+variation and limited multi-user training data.
+Given the small participant sample and unequal recording counts, we treat this
+as an exploratory transfer result rather than a population-level estimate.
+
+\subsection{On-Device System Cost}
+
+We compared a sensing baseline with MLC, HDC, and int8 CNN firmware. BLE and
+logging were disabled. Current was measured at 4.2\,V over one 60\,s trace
+after a 15\,s warm-up; flash and statically allocated RAM were obtained from
+the linker reports. Motionless and scripted activity differed by at most
+0.02\,mA for all configurations.
+
+\begin{table}[t]
+    \centering
+    \caption{Power, flash, and static RAM of the firmware configurations.}
+    \label{tab:system_cost}
+    \small
+    \begin{tabular}{
+        l
+        S[table-format=1.2]
+        S[table-format=2.2]
+        S[table-format=6.0, group-separator={,}]
+        S[table-format=5.0, group-separator={,}]
+    }
+        \toprule
+        {Config.} & {Current (mA)} & {Power (mW)} & {Flash (B)} & {RAM (B)} \\
+        \midrule
+        Baseline & 1.86 &  7.81 &  63412 & 27288 \\
+        MLC      & 1.58 &  6.64 &  63440 & 21184 \\
+        HDC      & 3.34 & 14.03 &  76228 & 41208 \\
+        CNN      & 4.90 & 20.58 & 170568 & 75568 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+MLC had the lowest measured power and firmware footprint. Its current was
+lower than the baseline because classification moved into the IMU and the MCU
+no longer drained the raw-data FIFO; this is a deployment-path difference, not
+the isolated cost of the tree. HDC occupied an intermediate cost point, while
+CNN required the most power, flash, and RAM because of its model, inference
+runtime, and tensor arena.
+
+\subsection{Continuous-Stream Behavior}
+
+We replayed guided recordings as continuous streams and measured false
+activations on 2.66 hours of held-out free-living data using frozen thresholds.
+CNN and HDC advanced 128-sample windows by 64 samples, whereas MLC used its
+native 128-sample cadence. With one decision per activation, guided-event
+recall was 0.844 for MLC, 0.822 for CNN, and 0.505 for HDC; the corresponding
+false-activation rates were 18.78, 84.15, and 728.13 per hour.
+
+Requiring two consecutive decisions reduced false activations to 3.38, 43.35,
+and 362.75 per hour, respectively, with guided recall of 0.217, 0.891, and
+0.182. These are method-specific operating points rather than an equal-latency
+comparison: confirmation adds approximately 1.07\,s for MLC and 0.53\,s for
+CNN and HDC. The continuous evaluation therefore exposes a recall--false-
+activation trade-off that is not captured by segmented-window macro-F1 alone.

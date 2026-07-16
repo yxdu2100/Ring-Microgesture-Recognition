@@ -1,0 +1,46 @@
+F11_ENERGY_GYR_X <= 698.500000
+|   F9_MAXIMUM_GYR_Y <= 3.816410
+|   |   F3_PEAK_TO_PEAK_ACC_Y <= 0.659180 : null (45/6.0)
+|   |   F3_PEAK_TO_PEAK_ACC_Y > 0.659180
+|   |   |   F12_MAXIMUM_ACC_Y <= 0.223023 : pinch_hold (6/2.0)
+|   |   |   F12_MAXIMUM_ACC_Y > 0.223023 : double_side_tap (42/4.0)
+|   F9_MAXIMUM_GYR_Y > 3.816410
+|   |   F4_ABS_MEAN_GYR_V <= 1.390135 : pinch_hold (42/3.0)
+|   |   F4_ABS_MEAN_GYR_V > 1.390135
+|   |   |   F3_PEAK_TO_PEAK_ACC_Y <= 2.517580 : double_pinch (51/3.0)
+|   |   |   F3_PEAK_TO_PEAK_ACC_Y > 2.517580 : pinch_hold (7/2.0)
+F11_ENERGY_GYR_X > 698.500000 : double_flick (50)
+
+Number of Leaves: 7
+Size of the tree: 13
+
+Classes:
+=> double_flick, double_pinch, double_side_tap, null, pinch_hold
+
+Features:
+=> F1_MINIMUM_GYR_X, F2_PEAK_TO_PEAK_GYR_X, F3_PEAK_TO_PEAK_ACC_Y, F4_ABS_MEAN_GYR_V, F5_MINIMUM_ACC_X, F6_MAXIMUM_GYR_X, F7_MAXIMUM_GYR_Z, F8_ABS_MEAN_ACC_V, F9_MAXIMUM_GYR_Y, F10_VARIANCE_ACC_Y, F11_ENERGY_GYR_X, F12_MAXIMUM_ACC_Y, F13_MINIMUM_ACC_Y, F14_VARIANCE_GYR_X, F15_ENERGY_GYR_Y
+
+=============== Complete trainging data statistics ===============
+
+Confusion Matrix:
+                double_flick	double_pinch	double_side_tap	null	pinch_hold	  <- classified as
+double_flick    53	0	0	1	0	
+double_pinch    0	52	0	2	0	
+double_side_tap 0	0	45	3	6	
+null            0	3	4	44	3	
+pinch_hold      0	2	0	0	52	
+
+Total Number of Instances: 270
+Correctly Classified Instances: 246
+Incorrectly Classified Instances: 24
+
+Accuracy:       91.11 %
+Cohen's kappa:  88.89 %
+
+Report:         precision	recall	support
+double_flick    1.00	0.98	54
+double_pinch    0.91	0.96	54
+double_side_tap 0.92	0.83	54
+null            0.88	0.81	54
+pinch_hold      0.85	0.96	54
+avg/total       0.91	0.91	270

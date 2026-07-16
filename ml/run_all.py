@@ -279,6 +279,14 @@ def main() -> None:
         action="store_true",
         help="Run the rejected/timeboxed phase-augmentation + scaled-update ablation",
     )
+    parser.add_argument(
+        "--train-development-free-living-null",
+        action="store_true",
+        help=(
+            "Post-hoc diagnostic: add development free-living windows to CNN/HDC "
+            "null training; validation and final-test sessions remain unchanged"
+        ),
+    )
     parser.add_argument("--skip-mlc-proxy", action="store_true")
     parser.add_argument("--st-tree-dir", type=Path, default=None)
     args = parser.parse_args()
@@ -309,11 +317,50 @@ def main() -> None:
     event_match_rows: list[dict] = []
     chronological_prediction_rows: list[dict] = []
 
+    development_null_windows = [
+        window
+        for window in windows
+        if window.data_role == "free_living_null" and window.usage == "development"
+    ]
+    if args.train_development_free_living_null and not development_null_windows:
+        raise ValueError(
+            "--train-development-free-living-null requires included development "
+            "free-living sessions"
+        )
+    if args.train_development_free_living_null:
+        development_session_ids = sorted({
+            window.session_id for window in development_null_windows
+        })
+        final_session_ids = sorted({
+            session.session_id
+            for session in sessions
+            if session.data_role == "free_living_null" and session.usage == "final_test"
+        })
+        (results / "training_diagnostic.json").write_text(json.dumps({
+            "status": "post_hoc_diagnostic_not_primary",
+            "applies_to": ["cnn_float", "hdc_D2048_reject"],
+            "development_free_living_training_sessions": development_session_ids,
+            "development_free_living_training_windows": len(development_null_windows),
+            "final_test_sessions_excluded_from_training": final_session_ids,
+            "validation_assignments": "unchanged_frozen_split",
+            "hdc_rejection_thresholds": "fit_on_frozen_validation_only",
+            "mlc_sensor_tree": "unchanged_reference_not_retrained",
+        }, indent=2) + "\n")
+
     for fold in splits["within_user_session_folds"]:
         fold_id = fold["fold_id"]
         fold_dir = results / "folds" / fold_id
         fold_dir.mkdir(parents=True, exist_ok=True)
-        fold_wrapper = {"cross_session": fold}
+        training_fold = dict(fold)
+        if args.train_development_free_living_null:
+            added_ids = [window.window_id for window in development_null_windows]
+            forbidden = set(fold["val"]) | set(fold["test"])
+            if forbidden.intersection(added_ids):
+                raise AssertionError(
+                    f"{fold_id}: development free-living training windows overlap val/test"
+                )
+            training_fold["train"] = list(fold["train"]) + added_ids
+        fold_wrapper = {"cross_session": training_fold}
         test_aligned = select_windows(windows, fold["test"])
         val_aligned = select_windows(windows, fold["val"])
         test_sessions = [sessions_by_id[session_id] for session_id in fold["test_gesture_sessions"]]
@@ -379,7 +426,7 @@ def main() -> None:
                 train_hdc,
             )
 
-            train_windows = select_windows(windows, fold["train"])
+            train_windows = select_windows(windows, training_fold["train"])
             lo, hi = fit_level_bounds(train_windows)
             codebooks = make_codebooks(dim=2048, seed=HDC_SEED, level_min=lo, level_max=hi)
             memories = train_hdc(
@@ -389,21 +436,35 @@ def main() -> None:
                 confidence_scaled_updates=args.hdc_experimental_phase_scaled,
             )
             thresholds = fit_rejection_thresholds(val_aligned, memories, codebooks)
-            hdc_method = (
-                "hdc_D2048_reject_phase_scaled_diagnostic"
-                if args.hdc_experimental_phase_scaled else
-                "hdc_D2048_reject"
+            if args.train_development_free_living_null:
+                hdc_method = "hdc_D2048_reject_freeliving_aug_diagnostic"
+            elif args.hdc_experimental_phase_scaled:
+                hdc_method = "hdc_D2048_reject_phase_scaled_diagnostic"
+            else:
+                hdc_method = "hdc_D2048_reject"
+            hdc_diagnostic = bool(
+                args.train_development_free_living_null
+                or args.hdc_experimental_phase_scaled
             )
 
             def hdc_predict(target, m=memories, c=codebooks, t=thresholds):
                 y, prediction, _ = predict_hdc_with_rejection(target, m, c, t)
                 return y, prediction
 
-            predictors.append((hdc_method, hdc_predict, 64, False))
+            predictors.append((hdc_method, hdc_predict, 64, hdc_diagnostic))
             y_true, prediction = hdc_predict(test_aligned)
             window_rows.append({
                 "method": hdc_method,
-                "diagnostic": False,
+                "diagnostic": hdc_diagnostic,
+                "diagnostic_reason": (
+                    "development_free_living_null_training"
+                    if args.train_development_free_living_null
+                    else (
+                        "phase_augmentation_scaled_updates"
+                        if args.hdc_experimental_phase_scaled
+                        else ""
+                    )
+                ),
                 "fold_id": fold_id,
                 "max_distance_fraction": thresholds.max_distance_fraction,
                 "min_margin_fraction": thresholds.min_margin_fraction,
@@ -495,21 +556,39 @@ def main() -> None:
             )
             model_path = Path(cnn_result["model"])
             stats_path = cnn_dir / "cnn_120hz_standardizer.npz"
+            cnn_method = (
+                "cnn_float_freeliving_aug_diagnostic"
+                if args.train_development_free_living_null
+                else "cnn_float"
+            )
             predictors.append((
-                "cnn_float",
+                cnn_method,
                 lambda target, model=model_path, stats=stats_path: _predict_cnn_model(model, stats, target),
                 64,
-                False,
+                bool(args.train_development_free_living_null),
             ))
             window_rows.append({
-                "method": "cnn_float",
-                "diagnostic": False,
+                "method": cnn_method,
+                "diagnostic": bool(args.train_development_free_living_null),
+                "diagnostic_reason": (
+                    "development_free_living_null_training"
+                    if args.train_development_free_living_null
+                    else ""
+                ),
                 "fold_id": fold_id,
                 **_window_metrics(cnn_result["_y_true"], cnn_result["_y_pred"]),
             })
 
         for method, predictor, hop_samples, diagnostic in predictors:
             for stream_kind, exposure_sessions, references in stream_sets:
+                if (
+                    args.train_development_free_living_null
+                    and diagnostic
+                    and stream_kind == "free_living_development"
+                ):
+                    # This stream is part of diagnostic training and is not an
+                    # evaluation set for the augmented CNN/HDC models.
+                    continue
                 stream = stream_windows(exposure_sessions, hop_samples=hop_samples)
                 _, prediction = predictor(stream)
                 chronological_prediction_rows.extend(

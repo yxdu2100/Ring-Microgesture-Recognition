@@ -1,0 +1,37 @@
+session_id,participant_id,role,usage,include,notes
+20260710_001,01,gesture,fold,true,normal guided mode
+20260710_002,01,gesture,fold,true,normal guided mode
+20260710_003,01,gesture,fold,true,normal guided mode
+20260710_004,01,gesture,fold,true,normal guided mode
+20260710_005,01,gesture,fold,true,normal guided mode
+20260711_001,01,gesture,fold,true,normal guided mode
+20260711_002,01,gesture,fold,true,normal guided mode
+20260711_003,01,gesture,fold,true,fast guided mode
+20260711_004,01,gesture,fold,true,fast guided mode
+20260711_005,01,gesture,fold,true,fast guided mode
+20260711_006,01,gesture,fold,true,fast guided mode
+20260711_007,01,gesture,fold,true,fast guided mode
+20260711_008,01,gesture,fold,true,fast guided mode
+20260711_009,01,gesture,fold,true,fast guided mode
+20260711_010,01,gesture,fold,true,fast guided mode
+20260711_011,01,gesture,fold,true,fast guided mode
+20260711_012,01,gesture,fold,true,fast guided mode
+20260711_013,01,gesture,fold,true,fast guided mode
+20260711_014,01,gesture,fold,true,fast guided mode
+20260711_015,01,gesture,fold,true,fast guided mode
+20260711_016,01,structured_null,train,true,randomized structured null
+20260711_017,01,structured_null,train,true,randomized structured null
+20260711_018,01,structured_null,validation,true,randomized structured null
+20260711_019,01,free_living_null,development,true,development free-living recording
+20260712_001,01,free_living_null,final_test,true,final free-living recording part 1
+20260712_002,01,free_living_null,final_test,true,final free-living recording part 2
+20260713_001,02,gesture,fold,true,LOPO guided session
+20260713_002,02,free_living_null,fold,true,LOPO free-living null
+20260713_003,03,gesture,fold,true,LOPO guided session
+20260713_004,03,free_living_null,fold,true,LOPO free-living null
+20260713_005,04,gesture,fold,true,LOPO guided session
+20260713_006,04,free_living_null,fold,true,LOPO free-living null
+20260714_001,05,gesture,fold,true,LOPO guided session
+20260714_002,05,free_living_null,fold,true,LOPO free-living null
+20260714_003,06,gesture,fold,true,LOPO guided session; participant ID corrected from 05 to 06 to match P6 collection folder
+20260714_004,06,free_living_null,fold,true,LOPO free-living null; participant ID corrected from 05 to 06 to match P6 collection folder

@@ -22,7 +22,7 @@ from train_mlc.st_tree import ST_TO_PROJECT_CLASS
 
 SEED = 20260706
 LINEAR_GYRO_FEATURES = {"PEAK_TO_PEAK", "MINIMUM", "MAXIMUM", "MEAN", "ABS_MEAN", "ABS_MAXIMUM"}
-SQUARED_GYRO_FEATURES = {"VARIANCE", "ENERGY"}
+SQUARED_GYRO_FEATURES = {"VARIANCE", "ENERGY", "ABS_ENERGY"}
 
 
 def _feature_matrix(windows, feature_names: list[str], gyro_lsb_scale: float) -> np.ndarray:

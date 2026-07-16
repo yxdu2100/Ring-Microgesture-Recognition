@@ -162,7 +162,10 @@ def mlc_feature_value(
         value = np.mean(np.abs(yf))
     elif feature_name == "VARIANCE":
         value = np.var(yf)
-    elif feature_name == "ENERGY":
+    elif feature_name in {"ENERGY", "ABS_ENERGY"}:
+        # MEMS Studio exposes the generic absolute-output flag for every MLC
+        # accumulator. Energy is a sum of squares and is already nonnegative,
+        # so ABS_ENERGY has the same numerical value as ENERGY.
         value = np.sum(yf * yf)
     elif feature_name == "PEAK_TO_PEAK":
         value = np.ptp(yf)
